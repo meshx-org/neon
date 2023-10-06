@@ -54,7 +54,7 @@ pageserver backend is not the limiting factor in the database size*.
 
 ## Impacted Components
 
-pageserver, control plane, safekeeper
+pageserver, control plane
 
 ## Terminology
 
@@ -128,14 +128,12 @@ This structure's size is constant.
 
 ### Pageserver changes
 
+#### Structural
+
 Everywhere the Pageserver currently deals with Tenants, it will move to dealing with
 `TenantShard`s, which are just a `Tenant` plus a `ShardIdentity` telling it which part
 of the keyspace it owns.  An un-sharded tenant is just a `TenantShard` whose `ShardIdentity`
 covers the whole keyspace.
-
-When the pageserver subscribes to a safekeeper for WAL updates, it must provide
-its `ShardIdentity` to receive the relevant subset of the WAL.  See the later section
-for how the safekeeper will handle this.
 
 When the pageserver writes layers and index_part.json to remote storage, it must
 include the shard index & count in the name, to avoid collisions (the count is
@@ -144,55 +142,40 @@ will also include a generation number: the [generation numbers](025-generation-n
 exactly the same for TenantShards as it does for Tenants today: each shard will have
 its own generation number.
 
-The pageserver doesn't have to do anything special during ingestion, compaction
+#### WAL Ingest
+
+The 0th shard in a tenant will be the only one that subscribes to the safekeeper to receive
+WAL updates.  It will do decoding via walredo the same way as the current code, but then
+instead of applying all the resulting deltas to its local Timeline, these will be scattered
+out according to the key of updated pages.
+
+The pageserver will expose a new east-west API for peer pageservers to send such delta
+writes to timelines.  The `ShardMap` will be provided to the pageserver.  Only the 0th shard
+needs the `ShardMap`, but for simplicity we can supply it to all TenantShards within
+a tenant.  The control plane is responsible for sending updates to the pageserver
+when the `ShardMap` changes.
+
+The 0th shard will issue writes to many peers concurrently, but impose a bound on how
+far the WAL will be consumed while waiting for writes to drain to peers -- if one peer
+is not servicing write requests, it will block the overall consumption of the WAL.
+
+Publishing updates to `remote_consistent_lsn` to safekeepers on the 0th shard
+will be based on feedback from peers: if a peer has writes pending (e.g. lsn consumed
+but remote_consistent_lsn not yet advanced), then the safekeeper-visible `remote_consistent_lsn`
+may not be advanced past that peer's `remote_consistent_lsn`.
+
+#### Compaction/GC
+
+No changes needed.
+
+The pageserver doesn't have to do anything special during compaction
 or GC.  It is implicitly operating on the subset of keys that map to its ShardIdentity.
 This will result in sparse layer files, containing keys only in the stripes that this
 shard owns.  Where optimizations currently exist in compaction for spotting "gaps" in
 the key range, these should be updated to ignore gaps that are due to sharding, to
 avoid spuriously splitting up layers ito stripe-sized pieces.
 
-### Safekeeper changes
-
-The safekeeper's API for subscribing to a WAL will be extended to enable callers
-to provide a `ShardIdentity`.  In this mode it will only send WAL entries that
-fall within the keyspace belonging to the shard, and WAL entries that are to
-be mirrored to all shards.
-
-Metadata updates describing databases+relations are mirrored to
-all shards, and other WAL messages are only provided to the shard
-that owns the key being updated.  For any operation that updates multiple
-keys, it will be provided to all the shards whose key ranges intersect with
-one or more of the keys referenced in the WAL message.
-
-Updates to `remote_consistent_lsn` must be handled differently when a tenant
-is sharded: the effective value only advances when all shards have ingested
-and persisted the WAL up to that point.  The safekeeper will need to track
-a per-shard value, and update the existing per-tenant value according to
-the minimum of the per-shard values.  Under normal operation, this will result
-in equally timely updates, but when one shard is offline, that will (correctly)
-prevent the overall tenant remote_consistent_lsn from advancing.
-
-### Pageserver Controller
-
-*We have a separate decision to make about whether the concept of shards should be transparent
-to the control plane, or managed by some lower layer.  In this section, think of
-the _pageserver controller_ as something that could be a new service, or could be just
-some extra code in the control plane service*
-
-The pageserver controller is a hypothesized new component, which is responsible for abstracting
-away the business of managing individual tenant placement on pageservers.  It will
-also act as the abstraction on top of sharding, so that the control plane continue
-to see a Tenant as a single object, even though the reality is that it is many
-TenantShards.
-
-The existing control plane would continue to operate in terms of Tenants, with the
-concept of a TenantShard living in the Pageserver Controller.  The Pageserver controller
-chooses which pageservers hold TenantShards, and sends feedback up to the control plane
-to update the ShardMap when locations change.
-
-For the rest of this RFC, think of the Pageserver Controller as logically a component of
-the control plane.  The actual implementation is beyond the scope of this RFC
-and will be described in more detail elsewhere.
+### Control Plane
 
 ### Endpoints
 
@@ -200,27 +183,30 @@ Compute endpoints will need to:
 - Accept a ShardMap as part of their configuration from the control plane
 - Route pageserver requests according to that ShardMap
 
+This will not be trivial, but is necessary to enable sharding tenants without
+adding latency from extra hops through some intermediate service.
+
 ### Control Plane
+
+Tenants, or _Projects_ in the control plane, will each own a set of TenantShards (this will
+be 1 for small tenants).  Logic for placement of tenant shards is just the same as the current logic for placing
+tenants.
+
+Tenant lifecycle operations like deletion will require fanning-out to all the shards
+in the tenant.  The same goes for timeline creation and deletion: a timeline should
+not be considered created until it has been created in all shards.
 
 #### Publishing ShardMap updates
 
-The control plane will provide an API for the pageserver controller to publish updates
-to the ShardMap for a tenant.  When such an update is provided, it will be used to
-update the configuration of any endpoints currently active for the tenant.
+The control plane is the source of truth for the `ShardMap`, since it is the coordinating
+entitity that knows about all the shards and which pageservers they are attached to.  This
+structure is then provided to the pageserver (for fanning out ingested WAL), and to the
+compute endpoints to enable them to find the right pageserver for a particular page.
 
-The ShardMap will be opaque to the Control Plane: it doesn't need to do anything with it
-other than storing and passing on to endpoints.
+#### Selectively enabling sharding for large tenants
 
-#### Attaching via the Pageserver Controller
-
-The Control Plane will issue attach/create API calls to the pageserver controller
-instead of directly to pageservers.  This will relieve the control plane of the need
-to know about sharding.
-
-#### Enabling sharding for large tenants
-
-The control plane will enable setting a "large tenant" hint via some higher layer,
-and pass this onward to the pageserver controller during tenant creation.  The UI
+The control plane will enable setting a "large tenant" hint during tenant creation via some UI,
+and use this to define the number of shards to create.  The UI
 for setting this hint doesn't have to be generally visible to users: it may be
 something that is done by administrators for onboarding special known-large workloads.
 
@@ -230,15 +216,16 @@ re-sharding of tenants.
 ## Future Work
 
 Clearly, the mechanism described in this RFC has substantial limitations:
-- A) the number of shards in a tenant is defined at creation time.
-- B) data is not distributed across the LSN dimension
+1. the number of shards in a tenant is defined at creation time.
+2. data is not distributed across the LSN dimension
+3. the work of fanning-out the WAL is done by the 0th shard pageserver
 
 ### Splitting
 
 To address `A`, a _splitting_ feature will later be added.  One shard can split its
 data into a number of children by doing a special compaction operation to generate
 image layers broken up child-shard-wise, and then writing out an index_part.json for
-each child.  This will then require coordination with the pageserver controller to
+each child.  This will then require external coordination (by the control plane) to
 safely attach these new child shards and then move them around to distribute work.
 The opposite _merging_ operation can also be imagined, but is unlikely to be implemented:
 once a Tenant has been sharded, there is little value in merging it again.
@@ -252,6 +239,18 @@ requires relativly little coordination because it is read-only: any node can ser
 read.  All reads to a particular shard would still flow through one node, but the
 disk capactity & I/O impact of servicing the read would be distributed.
 
+### Relieving pageserver of WAL-ingestion work
+
+The business of decoding the WAL stream and sending page deltas to the relevant pageservers
+is stateless and does not need to be part of the pageserver.
+
+Moving this into a separate service would be advantageous:
+- avoid a CPU/network "hot spot" on the 0th shard when dealing with a tenant doing
+  lots of writes.
+- we may use non-storage EC2 instances to do the fan-out work, which are cheaper per-cpu-core
+- we may scale the CPU/network resources for ingestion independently of how we scale
+  pageservers for capacity
+
 ## FAQ/Alternatives
 
 ### Why stripe the data, rather than using contiguous ranges of keyspace for each shard?
@@ -263,12 +262,10 @@ shard then it would not achieve our goal of distributing the write work across s
 
 ### Why not proxy read requests through one pageserver, so that endpoints don't have to change?
 
-Two reasons:
 1. This would not achieve scale-out of network bandwidth: a busy tenant with a large
    database would still cause a load hotspot on the pageserver routing its read requests. 
-2. Implementing a proxy model as a stop-gap would not be a cheap option, because
-   it requires making pageservers aware of their peers, and adding synchronisation to
-   keep pageservers aware of their peers as they come and go.
+2. The additional hop through the "proxy" pageserver would add latency and overall
+   resource cost (CPU, network bandwidth)
 
 ### Layer File Spreading: use one pageserver as the owner of a tenant, and have it spread out work on a per-layer basis to peers
 
@@ -282,4 +279,3 @@ space dimension it has the major limitation of requiring one node to handle all
 incoming writes, and compactions.  Even if the write workload for a large database 
 fits in one pageserver, it will still be a hotspot and such tenants may still
 de-facto require their own pageserver.
-
