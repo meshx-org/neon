@@ -58,8 +58,8 @@ pageserver, control plane
 
 ## Terminology
 
-**Key**: a postgres page number.  In the sense that the pageserver is a versioned key-value store,
-the page number is the key in that store.
+**Key**: a postgres page number, qualified by relation.  In the sense that the pageserver is a versioned key-value store,
+the page number is the key in that store.  `Key` is a literal data type in existing code.
 
 **LSN dimension**: this just means the range of LSNs (history), when talking about the range
 of keys and LSNs as a two dimensional space.
@@ -87,22 +87,103 @@ serve reads from a historical layer.
 ### Key mapping scheme
 
 Having decided to focus on key sharding, we must next decide how we will map
-keys to shards.
-
-It is proposed to use a "wide striping" approach, to obtain a good compromise
+keys to shards.  It is proposed to use a "wide striping" approach, to obtain a good compromise
 between data locality and avoiding entire large relations mapping to the same shard.
 
-The mapping is quite simple:
-- Define a stripe size, such as 256MiB.  Map this to a key count, such that a contiguous
-  range of 256MiB keys would all fall into this stripe, i.e. divide by 8kiB to get 32k.
-- Map a key to a stripe by integer division.
-- Map a stripe to a shard by taking the shard index modulo the shard count.
+We will define three spaces:
+- Key space: positive integer
+- Stripe space: positive integer
+- Shard space: integer from 0 to N-1, where we have N shards.
 
-This scheme will achieve a good balance as long as there is no aliasing of the keys
-to the stripe width.  In the example above, if someone had 4 shards and wrote
-keys that were all 4*32k apart, they would all map to the same shard.  However, we do
-not have to worry about this, since end users do not control page numbers: as long as
-we do not pick stripe sizes that map to any problematic postgres behaviors, we'll be fine.
+### Stripe -> Shard mapping
+
+The main property want want from our stripe->shard mapping is
+to spread bandwidth when high throughput contiguous writes are
+happening, such as appending to a relation.
+
+Stripes are mapped to shards with a simple modulo operation:
+
+```
+Stripe | 00 | 01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | ...
+Shard  | 00 | 01 | 02 | 01 | 02 | 03 | 01 | 02 | 03 | 01 | ...
+```
+
+### Key -> Stripe mapping
+
+Keys are currently defined in the pageserver's getpage@lsn interface as follows:
+```
+pub struct Key {
+    pub field1: u8,
+    pub field2: u32,
+    pub field3: u32,
+    pub field4: u32,
+    pub field5: u8,
+    pub field6: u32,
+}
+
+
+fn rel_block_to_key(rel: RelTag, blknum: BlockNumber) -> Key {
+    Key {
+        field1: 0x00,
+        field2: rel.spcnode,
+        field3: rel.dbnode,
+        field4: rel.relnode,
+        field5: rel.forknum,
+        field6: blknum,
+    }
+}
+```
+
+_Note: keys for relation metadata are ignored here, as this data will be mirrored to all
+shards.  For distribution purposes, we only care about user data keys_
+
+The properties we want from our Key->Stripe mapping are:
+- Locality in `blknum`, such that a contiguous range of `blknum` will generally fit
+  into the same stripe and consequently land on the same
+- Avoid the same blknum on different relations landing on the same stripe, so that
+  with many small relations we do not end up aliasing data to the same stripe/shard.
+- Avoid vulnerability to aliasing in the values of relation identity fields, such that
+  if there are patterns in the value of `relnode`, these do not manifest as patterns
+  in data placement.
+
+To achieve these goals, we may use a hybrid approach where the relation part of the
+key is hashed, and the `blknum` part is used literally.  To map a `Key` to a stripe:
+- Hash the `Key` fields 1-4, to select a stripe offset.
+- Divide field 6 (`blknum`) field by the stripe size in pages, and add this to the stripe
+  number in the previous step.
+
+We ignore `forknum` for key mapping, because it distinguishes different classes of data
+in the same relation, and we would like to keep the data in a relation together.
+
+Hashing fields 1-4 could be avoided if we chose to make some assumptions about how postgres
+picks values for `relnode`: if we assumed these values were reasonably well
+distributed, then we could skip the hashing.  However, this is a dangerous assumption:
+even if postgres itself 
+
+### Data placement examples
+
+For example, consider the extreme large databases cases of postgres data layout in a system with 8 shards
+and a stripe size of 32k pages:
+- A single large relation: `blknum` division will break the data up into 4096
+  stripes, which will be assigned round-robin to the shards, wrapping many times
+  as the number of stripes is much greater than the number of shards.
+- 4096 relations of of 32k pages each: each relation will map to exactly one stripe,
+  and that stripe will be placed according to the hash of the key fields 1-5.  The
+  data placement will be statistically uniform across shards.
+
+Data placement will be much less even on smaller databases:
+- A tenant with 2 shards and 2 relations of one stripe size each: there is a 50% chance
+  that both relations land on the same shard and no data lands on the other shard.
+- A tenant with 8 shards and one relation of size 12 stripes: 4 shards will have double
+  the data of the other four shards.
+
+These uneven cases for small amounts of data do not matter, as long as the stripe size
+is an order of magnitude smaller than the amount of data we are comfortable holding
+in a single shard: if our system handles shard sizes up to 10-100GB, then it is not an issue if
+a tenant has some shards with 256MB size and some shards with 512MB size, even though
+the standard deviation of shard size within the tenant is very high.  Our key mapping
+scheme provides a statistical guarantee that as the tenant's overall data size increases, 
+uniformity of placement will improve.
 
 ### Important Types
 
@@ -110,6 +191,8 @@ we do not pick stripe sizes that map to any problematic postgres behaviors, we'l
 
 Provides all the information needed to route a request for a particular
 key to the correct pageserver:
+- Layout version: this is initially 1, and can be incremented in future if we
+  choose to define alternative key mapping schemes.
 - Stripe size
 - Shard count
 - Address of the pageserver hosting each shard
@@ -120,6 +203,7 @@ This structure's size is linear with the number of shards.
 
 Provides the information needed to know whether a particular key belongs
 to a particular shard:
+- Layout version
 - Stripe size
 - Shard count
 - Shard index
