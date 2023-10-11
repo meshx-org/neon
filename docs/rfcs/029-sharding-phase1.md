@@ -54,7 +54,7 @@ pageserver backend is not the limiting factor in the database size*.
 
 ## Impacted Components
 
-pageserver, control plane
+pageserver, control plane, postgres/smgr
 
 ## Terminology
 
@@ -91,8 +91,8 @@ keys to shards.  It is proposed to use a "wide striping" approach, to obtain a g
 between data locality and avoiding entire large relations mapping to the same shard.
 
 We will define three spaces:
-- Key space: positive integer
-- Stripe space: positive integer
+- Key space: unsigned integer
+- Stripe space: unsigned integer
 - Shard space: integer from 0 to N-1, where we have N shards.
 
 ### Stripe -> Shard mapping
@@ -138,8 +138,10 @@ _Note: keys for relation metadata are ignored here, as this data will be mirrore
 shards.  For distribution purposes, we only care about user data keys_
 
 The properties we want from our Key->Stripe mapping are:
-- Locality in `blknum`, such that a contiguous range of `blknum` will generally fit
-  into the same stripe and consequently land on the same
+- Locality in `blknum`, such that adjacent `blknum` will usually map to
+  the same stripe and consequently land on the same shard, even though the overall
+  collection of blocks in a relation will be spread over many stripes and therefore
+  many shards. 
 - Avoid the same blknum on different relations landing on the same stripe, so that
   with many small relations we do not end up aliasing data to the same stripe/shard.
 - Avoid vulnerability to aliasing in the values of relation identity fields, such that
@@ -158,7 +160,10 @@ in the same relation, and we would like to keep the data in a relation together.
 Hashing fields 1-4 could be avoided if we chose to make some assumptions about how postgres
 picks values for `relnode`: if we assumed these values were reasonably well
 distributed, then we could skip the hashing.  However, this is a dangerous assumption:
-even if postgres itself 
+even if postgres itself assigns relnodes sequentially, a user workload could do something like
+creating 50 pairs of 2 tables, and then deleting the first table in each pair: the resulting
+sequentially allocated relnodes would then have a pattern that would lead to aliasing in
+shard placement.
 
 ### Data placement examples
 
@@ -233,7 +238,7 @@ WAL updates.  It will do decoding via walredo the same way as the current code, 
 instead of applying all the resulting deltas to its local Timeline, these will be scattered
 out according to the key of updated pages.
 
-The pageserver will expose a new east-west API for peer pageservers to send such delta
+The pageserver will expose a new API for peer pageservers to send such delta
 writes to timelines.  The `ShardMap` will be provided to the pageserver.  Only the 0th shard
 needs the `ShardMap`, but for simplicity we can supply it to all TenantShards within
 a tenant.  The control plane is responsible for sending updates to the pageserver
@@ -259,9 +264,7 @@ shard owns.  Where optimizations currently exist in compaction for spotting "gap
 the key range, these should be updated to ignore gaps that are due to sharding, to
 avoid spuriously splitting up layers ito stripe-sized pieces.
 
-### Control Plane
-
-### Endpoints
+### Compute Endpoints
 
 Compute endpoints will need to:
 - Accept a ShardMap as part of their configuration from the control plane
@@ -312,7 +315,8 @@ image layers broken up child-shard-wise, and then writing out an index_part.json
 each child.  This will then require external coordination (by the control plane) to
 safely attach these new child shards and then move them around to distribute work.
 The opposite _merging_ operation can also be imagined, but is unlikely to be implemented:
-once a Tenant has been sharded, there is little value in merging it again.
+once a Tenant has been sharded, the marginal efficiency benefit of merging is unlikely to justify
+the risk/complexity of implementing such a rarely-encountered scenario.
 
 ### Distributing work in the LSN dimension
 
