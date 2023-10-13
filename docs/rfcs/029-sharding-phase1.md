@@ -233,25 +233,16 @@ its own generation number.
 
 #### WAL Ingest
 
-The 0th shard in a tenant will be the only one that subscribes to the safekeeper to receive
-WAL updates.  It will do decoding via walredo the same way as the current code, but then
-instead of applying all the resulting deltas to its local Timeline, these will be scattered
-out according to the key of updated pages.
+In Phase 1, all shards will subscribe to the safekeeper to download WAL content.  They will filter
+it down to the pages relevant to their shard:
+- For ordinary user data writes, only retain a write if it matches the ShardIdentity
+- For metadata describing relations etc, all shards retain these writes.
 
-The pageserver will expose a new API for peer pageservers to send such delta
-writes to timelines.  The `ShardMap` will be provided to the pageserver.  Only the 0th shard
-needs the `ShardMap`, but for simplicity we can supply it to all TenantShards within
-a tenant.  The control plane is responsible for sending updates to the pageserver
-when the `ShardMap` changes.
-
-The 0th shard will issue writes to many peers concurrently, but impose a bound on how
-far the WAL will be consumed while waiting for writes to drain to peers -- if one peer
-is not servicing write requests, it will block the overall consumption of the WAL.
-
-Publishing updates to `remote_consistent_lsn` to safekeepers on the 0th shard
-will be based on feedback from peers: if a peer has writes pending (e.g. lsn consumed
-but remote_consistent_lsn not yet advanced), then the safekeeper-visible `remote_consistent_lsn`
-may not be advanced past that peer's `remote_consistent_lsn`.
+The pageservers must somehow give the safekeeper correct feedback on remote_consistent_lsn:
+one solution here is for the 0th shard to periodically peek at the IndexParts for all the other shards,
+and have only the 0th shard populate remote_consistent_lsn.  However, this is relatively
+expensive: if the safekeeper can be made shard-aware then it could be taught to use
+the max() of all shards' remote_consistent_lsns to decide when to trim the WAL.
 
 #### Compaction/GC
 
@@ -300,14 +291,30 @@ something that is done by administrators for onboarding special known-large work
 In future, this hint mechanism will become optional when we implement automatic
 re-sharding of tenants.
 
-## Future Work
+## Future Phases
 
-Clearly, the mechanism described in this RFC has substantial limitations:
-1. the number of shards in a tenant is defined at creation time.
-2. data is not distributed across the LSN dimension
-3. the work of fanning-out the WAL is done by the 0th shard pageserver
+This section exists to indicate what will likely come next after this phase.
 
-### Splitting
+Phases 2a and 2b are amenable to execution in parallel.
+
+### Phase 2a: WAL fan-out
+
+**Problem**: when all shards consume the whole WAL, the network bandwidth used
+for transmitting the WAL from safekeeper to pageservers is multiplied by a factor
+of the shard count.
+
+Network bandwidth is not our most pressing bottleneck, but it is likely to become
+a problem if we set a modest shard count (~8) on a significant number of tenants,
+especially as those larger tenants which we shard are also likely to have higher
+write bandwidth than average.
+
+
+
+### Phase 2b: Shard Splitting
+
+**Problem**: the number of shards in a tenant is defined at creation time and cannot
+be changed.  This causes excessive sharding for most small tenants, and an upper
+bound on scale for very large tenants.
 
 To address `A`, a _splitting_ feature will later be added.  One shard can split its
 data into a number of children by doing a special compaction operation to generate
@@ -318,26 +325,29 @@ The opposite _merging_ operation can also be imagined, but is unlikely to be imp
 once a Tenant has been sharded, the marginal efficiency benefit of merging is unlikely to justify
 the risk/complexity of implementing such a rarely-encountered scenario.
 
-### Distributing work in the LSN dimension
+### Phase N (future): distributed historical reads
 
-To address `B`, it is envisaged to have some gossip mechanism for pageservers to communicate
+**Problem**: while sharding based on key is good for handling changes in overall
+database size, it is less suitable for spiky/unpredictable changes in the read
+workload to historical layers.  Sudden increases in historical reads could result
+in sudden increases in local disk capacity required for a TenantShard.
+
+Example: the extreme case of this would be to run a tenant for a year, then create branches
+with ancestors at monthly intervals.  This could lead to a sudden 12x inflation in
+the on-disk capacity footprint of a TenantShard, since it would be serving reads
+from all those disparate historical layers.
+
+If we can respond fast enough, then key-sharding a tenant more finely can help with
+this, but splitting may be a relatively expensive operation and the increased historical
+read load may be transient.
+
+A separate mechanism for handling heavy historical reads could be something like
+a gossip mechanism for pageservers to communicate
 about their workload, and then a getpageatlsn offload mechanism where one pageserver can
 ask another to go read the necessary layers from remote storage to serve the read.  This
 requires relativly little coordination because it is read-only: any node can service any
 read.  All reads to a particular shard would still flow through one node, but the
 disk capactity & I/O impact of servicing the read would be distributed.
-
-### Relieving pageserver of WAL-ingestion work
-
-The business of decoding the WAL stream and sending page deltas to the relevant pageservers
-is stateless and does not need to be part of the pageserver.
-
-Moving this into a separate service would be advantageous:
-- avoid a CPU/network "hot spot" on the 0th shard when dealing with a tenant doing
-  lots of writes.
-- we may use non-storage EC2 instances to do the fan-out work, which are cheaper per-cpu-core
-- we may scale the CPU/network resources for ingestion independently of how we scale
-  pageservers for capacity
 
 ## FAQ/Alternatives
 
