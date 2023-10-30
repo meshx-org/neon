@@ -16,10 +16,18 @@ use super::Timeline;
 ///
 /// The caller is responsible for proper timeline data filling before the final init.
 #[must_use]
-pub struct UninitializedTimeline<'t> {
+pub(crate) struct UninitializedTimeline<'t> {
     pub(crate) owning_tenant: &'t Tenant,
     timeline_id: TimelineId,
     raw_timeline: Option<Arc<Timeline>>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub(crate) enum TimelineCreationError {
+    #[error("Already exists")]
+    AlreadyExists,
+    #[error("Already creating")]
+    AlreadyCreating,
 }
 
 impl<'t> UninitializedTimeline<'t> {
@@ -27,16 +35,25 @@ impl<'t> UninitializedTimeline<'t> {
         owning_tenant: &'t Tenant,
         timeline_id: TimelineId,
         raw_timeline: Option<Arc<Timeline>>,
-    ) -> Self {
-        Self {
-            owning_tenant,
-            timeline_id,
-            raw_timeline,
+    ) -> Result<Self, TimelineCreationError> {
+        let timelines = owning_tenant.timelines.lock().unwrap();
+        let mut creating_timelines = owning_tenant.timelines_creating.lock().unwrap();
+
+        if timelines.contains_key(&timeline_id) {
+            Err(TimelineCreationError::AlreadyExists)
+        } else if creating_timelines.contains(&timeline_id) {
+            Err(TimelineCreationError::AlreadyCreating)
+        } else {
+            creating_timelines.insert(timeline_id);
+            Ok(Self {
+                owning_tenant,
+                timeline_id,
+                raw_timeline,
+            })
         }
     }
 
-    /// Finish timeline creation: insert it into the Tenant's timelines map and remove the
-    /// uninit mark file.
+    /// Finish timeline creation: insert it into the Tenant's timelines map
     ///
     /// This function launches the flush loop if not already done.
     ///
@@ -123,6 +140,14 @@ impl Drop for UninitializedTimeline<'_> {
             error!("Timeline got dropped without initializing, cleaning its files");
             cleanup_timeline_directory(&timeline.get_path());
         }
+
+        // If we succeeded, the timeline is now in [`Tenant::timelines`] and this takes over
+        // to block colliding creations in [`UninitializedTimeline::new`].
+        self.owning_tenant
+            .timelines_creating
+            .lock()
+            .unwrap()
+            .remove(&self.timeline_id);
     }
 }
 

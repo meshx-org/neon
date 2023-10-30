@@ -153,6 +153,10 @@ def test_timeline_create_break_after_dir_creation(neon_env_builder: NeonEnvBuild
     old_tenant_timelines = env.neon_cli.list_timelines(tenant_id)
     initial_timeline_dirs = [d for d in timelines_dir.iterdir()]
 
+    env.pageserver.allowed_errors.append(
+        ".*Timeline got dropped without initializing, cleaning its files.*"
+    )
+
     # Introduce failpoint when creating a new timeline directory, before any other files were created
     pageserver_http.configure_failpoints(("after-timeline-dir-creation", "return"))
     with pytest.raises(Exception, match="after-timeline-dir-creation"):

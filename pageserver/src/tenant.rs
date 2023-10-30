@@ -231,6 +231,12 @@ pub struct Tenant {
     generation: Generation,
 
     timelines: Mutex<HashMap<TimelineId, Arc<Timeline>>>,
+
+    /// During timeline creation, we first insert the TimelineId to the
+    /// creating map, then `timelines`, then remove it from the creating map.
+    /// **Lock order**: if acquring both, acquire`timelines` before `timelines_creating`
+    timelines_creating: std::sync::Mutex<HashSet<TimelineId>>,
+
     // This mutex prevents creation of new timelines during GC.
     // Adding yet another mutex (in addition to `timelines`) is needed because holding
     // `timelines` mutex during all GC iteration
@@ -1402,7 +1408,7 @@ impl Tenant {
     /// For tests, use `DatadirModification::init_empty_test_timeline` + `commit` to setup the
     /// minimum amount of keys required to get a writable timeline.
     /// (Without it, `put` might fail due to `repartition` failing.)
-    pub async fn create_empty_timeline(
+    pub(crate) async fn create_empty_timeline(
         &self,
         new_timeline_id: TimelineId,
         initdb_lsn: Lsn,
@@ -1414,15 +1420,6 @@ impl Tenant {
             "Cannot create empty timelines on inactive tenant"
         );
 
-        {
-            let timelines = self.timelines.lock().unwrap();
-            if timelines.contains_key(&new_timeline_id) {
-                anyhow::bail!(
-                    "Timeline {}/{new_timeline_id} already exists in pageserver's memory",
-                    self.tenant_id
-                );
-            }
-        }
         let new_metadata = TimelineMetadata::new(
             // Initialize disk_consistent LSN to 0, The caller must import some data to
             // make it valid, before calling finish_creation()
@@ -2352,6 +2349,7 @@ impl Tenant {
             loading_started_at: Instant::now(),
             tenant_conf: Arc::new(RwLock::new(attached_conf)),
             timelines: Mutex::new(HashMap::new()),
+            timelines_creating: Mutex::new(HashSet::new()),
             gc_cs: tokio::sync::Mutex::new(()),
             walredo_mgr,
             remote_storage,
@@ -2764,14 +2762,6 @@ impl Tenant {
             lsn
         });
 
-        // Verify that this is a new ID
-        {
-            let timelines = self.timelines.lock().unwrap();
-            if timelines.contains_key(&dst_id) {
-                return Err(CreateTimelineError::AlreadyExists);
-            }
-        };
-
         // Ensure that `start_lsn` is valid, i.e. the LSN is within the PITR
         // horizon on the source timeline
         //
@@ -2872,13 +2862,6 @@ impl Tenant {
         pg_version: u32,
         ctx: &RequestContext,
     ) -> anyhow::Result<Arc<Timeline>> {
-        {
-            let timelines = self.timelines.lock().unwrap();
-            if timelines.contains_key(&timeline_id) {
-                return Err(anyhow::anyhow!(CreateTimelineError::AlreadyExists));
-            }
-        }
-
         // create a `tenant/{tenant_id}/timelines/basebackup-{timeline_id}.{TEMP_FILE_SUFFIX}/`
         // temporary directory for basebackup files for the given timeline.
         let initdb_path = path_with_suffix_extension(
@@ -3022,6 +3005,15 @@ impl Tenant {
 
         timeline_struct.init_empty_layer_map(start_lsn);
 
+        // UninitializedTimeline acts as a guard on [`Tenant::creating_timelines`]: this is where
+        // we enforce that we cannot concurrently create the same timeline.  This is important for
+        // safety, as concurrent creations would tread on one anothers' files on disk.
+        //
+        // Once we have an UninitializedTimeline, we are confident that nobody else can try and
+        // create the same timeline concurrently.
+        let uninit_timeline =
+            UninitializedTimeline::new(self, new_timeline_id, Some(timeline_struct))?;
+
         let timeline_path = self.conf.timeline_path(&self.tenant_id, &new_timeline_id);
 
         if let Err(e) = self
@@ -3035,11 +3027,7 @@ impl Tenant {
 
         debug!("Successfully created initial files for timeline {tenant_id}/{new_timeline_id}");
 
-        Ok(UninitializedTimeline::new(
-            self,
-            new_timeline_id,
-            Some(timeline_struct),
-        ))
+        Ok(uninit_timeline)
     }
 
     async fn create_timeline_files(
@@ -3715,13 +3703,7 @@ mod tests {
             .await
         {
             Ok(_) => panic!("duplicate timeline creation should fail"),
-            Err(e) => assert_eq!(
-                e.to_string(),
-                format!(
-                    "Timeline {}/{} already exists in pageserver's memory",
-                    tenant.tenant_id, TIMELINE_ID
-                )
-            ),
+            Err(e) => assert_eq!(e.to_string(), "Already exists".to_string()),
         }
 
         Ok(())
