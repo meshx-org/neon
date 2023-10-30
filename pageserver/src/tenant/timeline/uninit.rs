@@ -2,8 +2,8 @@ use std::{collections::hash_map::Entry, fs, sync::Arc};
 
 use anyhow::Context;
 use camino::Utf8PathBuf;
-use tracing::{error, info, info_span, warn};
-use utils::{crashsafe, fs_ext, id::TimelineId, lsn::Lsn};
+use tracing::{error, info, info_span};
+use utils::{fs_ext, id::TimelineId, lsn::Lsn};
 
 use crate::{context::RequestContext, import_datadir, tenant::Tenant};
 
@@ -19,14 +19,14 @@ use super::Timeline;
 pub struct UninitializedTimeline<'t> {
     pub(crate) owning_tenant: &'t Tenant,
     timeline_id: TimelineId,
-    raw_timeline: Option<(Arc<Timeline>, TimelineUninitMark)>,
+    raw_timeline: Option<Arc<Timeline>>,
 }
 
 impl<'t> UninitializedTimeline<'t> {
     pub(crate) fn new(
         owning_tenant: &'t Tenant,
         timeline_id: TimelineId,
-        raw_timeline: Option<(Arc<Timeline>, TimelineUninitMark)>,
+        raw_timeline: Option<Arc<Timeline>>,
     ) -> Self {
         Self {
             owning_tenant,
@@ -45,7 +45,7 @@ impl<'t> UninitializedTimeline<'t> {
         let timeline_id = self.timeline_id;
         let tenant_id = self.owning_tenant.tenant_id;
 
-        let (new_timeline, uninit_mark) = self.raw_timeline.take().with_context(|| {
+        let new_timeline = self.raw_timeline.take().with_context(|| {
             format!("No timeline for initalization found for {tenant_id}/{timeline_id}")
         })?;
 
@@ -62,11 +62,6 @@ impl<'t> UninitializedTimeline<'t> {
                 "Found freshly initialized timeline {tenant_id}/{timeline_id} in the tenant map"
             ),
             Entry::Vacant(v) => {
-                uninit_mark.remove_uninit_mark().with_context(|| {
-                    format!(
-                        "Failed to remove uninit mark file for timeline {tenant_id}/{timeline_id}"
-                    )
-                })?;
                 v.insert(Arc::clone(&new_timeline));
 
                 new_timeline.maybe_spawn_flush_loop();
@@ -113,103 +108,31 @@ impl<'t> UninitializedTimeline<'t> {
     }
 
     pub(crate) fn raw_timeline(&self) -> anyhow::Result<&Arc<Timeline>> {
-        Ok(&self
-            .raw_timeline
-            .as_ref()
-            .with_context(|| {
-                format!(
-                    "No raw timeline {}/{} found",
-                    self.owning_tenant.tenant_id, self.timeline_id
-                )
-            })?
-            .0)
+        self.raw_timeline.as_ref().ok_or(anyhow::anyhow!(
+            "No raw timeline {}/{} found",
+            self.owning_tenant.tenant_id,
+            self.timeline_id
+        ))
     }
 }
 
 impl Drop for UninitializedTimeline<'_> {
     fn drop(&mut self) {
-        if let Some((_, uninit_mark)) = self.raw_timeline.take() {
+        if let Some(timeline) = self.raw_timeline.take() {
             let _entered = info_span!("drop_uninitialized_timeline", tenant_id = %self.owning_tenant.tenant_id, timeline_id = %self.timeline_id).entered();
             error!("Timeline got dropped without initializing, cleaning its files");
-            cleanup_timeline_directory(uninit_mark);
+            cleanup_timeline_directory(&timeline.get_path());
         }
     }
 }
 
-pub(crate) fn cleanup_timeline_directory(uninit_mark: TimelineUninitMark) {
-    let timeline_path = &uninit_mark.timeline_path;
+pub(crate) fn cleanup_timeline_directory(timeline_path: &Utf8PathBuf) {
     match fs_ext::ignore_absent_files(|| fs::remove_dir_all(timeline_path)) {
         Ok(()) => {
             info!("Timeline dir {timeline_path:?} removed successfully, removing the uninit mark")
         }
         Err(e) => {
             error!("Failed to clean up uninitialized timeline directory {timeline_path:?}: {e:?}")
-        }
-    }
-    drop(uninit_mark); // mark handles its deletion on drop, gets retained if timeline dir exists
-}
-
-/// An uninit mark file, created along the timeline dir to ensure the timeline either gets fully initialized and loaded into pageserver's memory,
-/// or gets removed eventually.
-///
-/// XXX: it's important to create it near the timeline dir, not inside it to ensure timeline dir gets removed first.
-#[must_use]
-pub(crate) struct TimelineUninitMark {
-    uninit_mark_deleted: bool,
-    uninit_mark_path: Utf8PathBuf,
-    pub(crate) timeline_path: Utf8PathBuf,
-}
-
-impl TimelineUninitMark {
-    pub(crate) fn new(uninit_mark_path: Utf8PathBuf, timeline_path: Utf8PathBuf) -> Self {
-        Self {
-            uninit_mark_deleted: false,
-            uninit_mark_path,
-            timeline_path,
-        }
-    }
-
-    fn remove_uninit_mark(mut self) -> anyhow::Result<()> {
-        if !self.uninit_mark_deleted {
-            self.delete_mark_file_if_present()?;
-        }
-
-        Ok(())
-    }
-
-    fn delete_mark_file_if_present(&mut self) -> anyhow::Result<()> {
-        let uninit_mark_file = &self.uninit_mark_path;
-        let uninit_mark_parent = uninit_mark_file
-            .parent()
-            .with_context(|| format!("Uninit mark file {uninit_mark_file:?} has no parent"))?;
-        fs_ext::ignore_absent_files(|| fs::remove_file(uninit_mark_file)).with_context(|| {
-            format!("Failed to remove uninit mark file at path {uninit_mark_file:?}")
-        })?;
-        crashsafe::fsync(uninit_mark_parent).context("Failed to fsync uninit mark parent")?;
-        self.uninit_mark_deleted = true;
-
-        Ok(())
-    }
-}
-
-impl Drop for TimelineUninitMark {
-    fn drop(&mut self) {
-        if !self.uninit_mark_deleted {
-            if self.timeline_path.exists() {
-                error!(
-                    "Uninit mark {} is not removed, timeline {} stays uninitialized",
-                    self.uninit_mark_path, self.timeline_path
-                )
-            } else {
-                // unblock later timeline creation attempts
-                warn!(
-                    "Removing intermediate uninit mark file {}",
-                    self.uninit_mark_path
-                );
-                if let Err(e) = self.delete_mark_file_if_present() {
-                    error!("Failed to remove the uninit mark file: {e}")
-                }
-            }
         }
     }
 }

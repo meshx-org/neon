@@ -439,6 +439,10 @@ pub enum LogicalSizeCalculationCause {
 
 /// Public interface functions
 impl Timeline {
+    pub(crate) fn get_path(&self) -> Utf8PathBuf {
+        self.conf.timeline_path(&self.tenant_id, &self.timeline_id)
+    }
+
     /// Get the LSN where this branch was created
     pub fn get_ancestor_lsn(&self) -> Lsn {
         self.ancestor_lsn

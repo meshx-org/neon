@@ -143,7 +143,7 @@ def test_timeline_init_break_before_checkpoint(neon_env_builder: NeonEnvBuilder)
     ), "pageserver should clean its temp timeline files on timeline creation failure"
 
 
-def test_timeline_create_break_after_uninit_mark(neon_env_builder: NeonEnvBuilder):
+def test_timeline_create_break_after_dir_creation(neon_env_builder: NeonEnvBuilder):
     env = neon_env_builder.init_start()
     pageserver_http = env.pageserver.http_client()
 
@@ -153,10 +153,10 @@ def test_timeline_create_break_after_uninit_mark(neon_env_builder: NeonEnvBuilde
     old_tenant_timelines = env.neon_cli.list_timelines(tenant_id)
     initial_timeline_dirs = [d for d in timelines_dir.iterdir()]
 
-    # Introduce failpoint when creating a new timeline uninit mark, before any other files were created
-    pageserver_http.configure_failpoints(("after-timeline-uninit-mark-creation", "return"))
-    with pytest.raises(Exception, match="after-timeline-uninit-mark-creation"):
-        _ = env.neon_cli.create_timeline("test_timeline_create_break_after_uninit_mark", tenant_id)
+    # Introduce failpoint when creating a new timeline directory, before any other files were created
+    pageserver_http.configure_failpoints(("after-timeline-dir-creation", "return"))
+    with pytest.raises(Exception, match="after-timeline-dir-creation"):
+        _ = env.neon_cli.create_timeline("test_timeline_create_break_after_dir_creation", tenant_id)
 
     # Creating the timeline didn't finish. The other timelines on tenant should still be present and work normally.
     # "New" timeline is not present in the list, allowing pageserver to retry the same request

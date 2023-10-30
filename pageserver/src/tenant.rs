@@ -44,7 +44,6 @@ use std::process::Stdio;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::MutexGuard;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -59,7 +58,6 @@ use self::mgr::GetActiveTenantError;
 use self::mgr::GetTenantError;
 use self::mgr::TenantsMap;
 use self::remote_timeline_client::RemoteTimelineClient;
-use self::timeline::uninit::TimelineUninitMark;
 use self::timeline::uninit::UninitializedTimeline;
 use self::timeline::EvictionTaskTenantState;
 use self::timeline::TimelineResources;
@@ -471,8 +469,6 @@ impl Tenant {
             let mut timelines_accessor = self.timelines.lock().unwrap();
             match timelines_accessor.entry(timeline_id) {
                 Entry::Occupied(_) => {
-                    // The uninit mark file acts as a lock that prevents another task from
-                    // initializing the timeline at the same time.
                     unreachable!(
                         "Timeline {tenant_id}/{timeline_id} already exists in the tenant map"
                     );
@@ -862,8 +858,7 @@ impl Tenant {
             let entry_path = entry.path();
 
             let purge = if crate::is_temporary(entry_path)
-                // TODO: uninit_mark isn't needed any more, since uninitialized timelines are already
-                // covered by the check that the timeline must exist in remote storage.
+                // TODO: remove uninit mark code (https://github.com/neondatabase/neon/issues/5718)
                 || is_uninit_mark(entry_path)
                 || crate::is_delete_mark(entry_path)
             {
@@ -1399,12 +1394,10 @@ impl Tenant {
     /// initial image of the datadir to the new timeline after this.
     ///
     /// Until that happens, the on-disk state is invalid (disk_consistent_lsn=Lsn(0))
-    /// and the timeline will fail to load at a restart.
-    ///
-    /// That's why we add an uninit mark file, and wrap it together witht the Timeline
-    /// in-memory object into UninitializedTimeline.
-    /// Once the caller is done setting up the timeline, they should call
-    /// `UninitializedTimeline::initialize_with_lock` to remove the uninit mark.
+    /// and the timeline will not be usable.  If we restart during this process, then
+    /// we rely on the Tenant::attach behavior that only loads timelines present
+    /// in remote storage.  A partially initialized tenant directory will have not yet
+    /// been uploaded, and therefore will be purged on next startup by [`Tenant::clean_up_timelines`].
     ///
     /// For tests, use `DatadirModification::init_empty_test_timeline` + `commit` to setup the
     /// minimum amount of keys required to get a writable timeline.
@@ -1421,10 +1414,15 @@ impl Tenant {
             "Cannot create empty timelines on inactive tenant"
         );
 
-        let timeline_uninit_mark = {
+        {
             let timelines = self.timelines.lock().unwrap();
-            self.create_timeline_uninit_mark(new_timeline_id, &timelines)?
-        };
+            if timelines.contains_key(&new_timeline_id) {
+                anyhow::bail!(
+                    "Timeline {}/{new_timeline_id} already exists in pageserver's memory",
+                    self.tenant_id
+                );
+            }
+        }
         let new_metadata = TimelineMetadata::new(
             // Initialize disk_consistent LSN to 0, The caller must import some data to
             // make it valid, before calling finish_creation()
@@ -1436,14 +1434,8 @@ impl Tenant {
             initdb_lsn,
             pg_version,
         );
-        self.prepare_new_timeline(
-            new_timeline_id,
-            &new_metadata,
-            timeline_uninit_mark,
-            initdb_lsn,
-            None,
-        )
-        .await
+        self.prepare_new_timeline(new_timeline_id, &new_metadata, initdb_lsn, None)
+            .await
     }
 
     /// Helper for unit tests to create an empty timeline.
@@ -2772,11 +2764,12 @@ impl Tenant {
             lsn
         });
 
-        // Create a placeholder for the new branch. This will error
-        // out if the new timeline ID is already in use.
-        let timeline_uninit_mark = {
+        // Verify that this is a new ID
+        {
             let timelines = self.timelines.lock().unwrap();
-            self.create_timeline_uninit_mark(dst_id, &timelines)?
+            if timelines.contains_key(&dst_id) {
+                return Err(CreateTimelineError::AlreadyExists);
+            }
         };
 
         // Ensure that `start_lsn` is valid, i.e. the LSN is within the PITR
@@ -2846,7 +2839,6 @@ impl Tenant {
             .prepare_new_timeline(
                 dst_id,
                 &metadata,
-                timeline_uninit_mark,
                 start_lsn + 1,
                 Some(Arc::clone(src_timeline)),
             )
@@ -2880,10 +2872,13 @@ impl Tenant {
         pg_version: u32,
         ctx: &RequestContext,
     ) -> anyhow::Result<Arc<Timeline>> {
-        let timeline_uninit_mark = {
+        {
             let timelines = self.timelines.lock().unwrap();
-            self.create_timeline_uninit_mark(timeline_id, &timelines)?
-        };
+            if timelines.contains_key(&timeline_id) {
+                return Err(anyhow::anyhow!(CreateTimelineError::AlreadyExists));
+            }
+        }
+
         // create a `tenant/{tenant_id}/timelines/basebackup-{timeline_id}.{TEMP_FILE_SUFFIX}/`
         // temporary directory for basebackup files for the given timeline.
         let initdb_path = path_with_suffix_extension(
@@ -2893,7 +2888,6 @@ impl Tenant {
             TEMP_FILE_SUFFIX,
         );
 
-        // an uninit mark was placed before, nothing else can access this timeline files
         // current initdb was not run yet, so remove whatever was left from the previous runs
         if initdb_path.exists() {
             fs::remove_dir_all(&initdb_path).with_context(|| {
@@ -2926,13 +2920,7 @@ impl Tenant {
             pg_version,
         );
         let raw_timeline = self
-            .prepare_new_timeline(
-                timeline_id,
-                &new_metadata,
-                timeline_uninit_mark,
-                pgdata_lsn,
-                None,
-            )
+            .prepare_new_timeline(timeline_id, &new_metadata, pgdata_lsn, None)
             .await?;
 
         let tenant_id = raw_timeline.owning_tenant.tenant_id;
@@ -3006,13 +2994,11 @@ impl Tenant {
     ///
     /// An empty layer map is initialized, and new data and WAL can be imported starting
     /// at 'disk_consistent_lsn'. After any initial data has been imported, call
-    /// `finish_creation` to insert the Timeline into the timelines map and to remove the
-    /// uninit mark file.
+    /// `finish_creation` to insert the Timeline into the timelines map.
     async fn prepare_new_timeline(
         &self,
         new_timeline_id: TimelineId,
         new_metadata: &TimelineMetadata,
-        uninit_mark: TimelineUninitMark,
         start_lsn: Lsn,
         ancestor: Option<Arc<Timeline>>,
     ) -> anyhow::Result<UninitializedTimeline> {
@@ -3036,12 +3022,14 @@ impl Tenant {
 
         timeline_struct.init_empty_layer_map(start_lsn);
 
+        let timeline_path = self.conf.timeline_path(&self.tenant_id, &new_timeline_id);
+
         if let Err(e) = self
-            .create_timeline_files(&uninit_mark.timeline_path, &new_timeline_id, new_metadata)
+            .create_timeline_files(&timeline_path, &new_timeline_id, new_metadata)
             .await
         {
             error!("Failed to create initial files for timeline {tenant_id}/{new_timeline_id}, cleaning up: {e:?}");
-            cleanup_timeline_directory(uninit_mark);
+            cleanup_timeline_directory(&timeline_path);
             return Err(e);
         }
 
@@ -3050,7 +3038,7 @@ impl Tenant {
         Ok(UninitializedTimeline::new(
             self,
             new_timeline_id,
-            Some((timeline_struct, uninit_mark)),
+            Some(timeline_struct),
         ))
     }
 
@@ -3062,53 +3050,14 @@ impl Tenant {
     ) -> anyhow::Result<()> {
         crashsafe::create_dir(timeline_path).context("Failed to create timeline directory")?;
 
-        fail::fail_point!("after-timeline-uninit-mark-creation", |_| {
-            anyhow::bail!("failpoint after-timeline-uninit-mark-creation");
+        fail::fail_point!("after-timeline-dir-creation", |_| {
+            anyhow::bail!("failpoint after-timeline-dir-creation");
         });
 
         save_metadata(self.conf, &self.tenant_id, new_timeline_id, new_metadata)
             .await
             .context("Failed to create timeline metadata")?;
         Ok(())
-    }
-
-    /// Attempts to create an uninit mark file for the timeline initialization.
-    /// Bails, if the timeline is already loaded into the memory (i.e. initialized before), or the uninit mark file already exists.
-    ///
-    /// This way, we need to hold the timelines lock only for small amount of time during the mark check/creation per timeline init.
-    fn create_timeline_uninit_mark(
-        &self,
-        timeline_id: TimelineId,
-        timelines: &MutexGuard<HashMap<TimelineId, Arc<Timeline>>>,
-    ) -> anyhow::Result<TimelineUninitMark> {
-        let tenant_id = self.tenant_id;
-
-        anyhow::ensure!(
-            timelines.get(&timeline_id).is_none(),
-            "Timeline {tenant_id}/{timeline_id} already exists in pageserver's memory"
-        );
-        let timeline_path = self.conf.timeline_path(&tenant_id, &timeline_id);
-        anyhow::ensure!(
-            !timeline_path.exists(),
-            "Timeline {timeline_path} already exists, cannot create its uninit mark file",
-        );
-
-        let uninit_mark_path = self
-            .conf
-            .timeline_uninit_mark_file_path(tenant_id, timeline_id);
-        fs::File::create(&uninit_mark_path)
-            .context("Failed to create uninit mark file")
-            .and_then(|_| {
-                crashsafe::fsync_file_and_parent(&uninit_mark_path)
-                    .context("Failed to fsync uninit mark file")
-            })
-            .with_context(|| {
-                format!("Failed to crate uninit mark for timeline {tenant_id}/{timeline_id}")
-            })?;
-
-        let uninit_mark = TimelineUninitMark::new(uninit_mark_path, timeline_path);
-
-        Ok(uninit_mark)
     }
 
     /// Gathers inputs from all of the timelines to produce a sizing model input.
@@ -4718,51 +4667,6 @@ mod tests {
             assert!(expect_initdb_optimization);
             assert!(initdb_optimization_count > 0);
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_uninit_mark_crash() -> anyhow::Result<()> {
-        let name = "test_uninit_mark_crash";
-        let harness = TenantHarness::create(name)?;
-        {
-            let (tenant, ctx) = harness.load().await;
-            let tline = tenant
-                .create_empty_timeline(TIMELINE_ID, Lsn(0), DEFAULT_PG_VERSION, &ctx)
-                .await?;
-            // Keeps uninit mark in place
-            let raw_tline = tline.raw_timeline().unwrap();
-            raw_tline
-                .shutdown()
-                .instrument(info_span!("test_shutdown", tenant_id=%raw_tline.tenant_id))
-                .await;
-            std::mem::forget(tline);
-        }
-
-        let (tenant, _) = harness.load().await;
-        match tenant.get_timeline(TIMELINE_ID, false) {
-            Ok(_) => panic!("timeline should've been removed during load"),
-            Err(e) => {
-                assert_eq!(
-                    e,
-                    GetTimelineError::NotFound {
-                        tenant_id: tenant.tenant_id,
-                        timeline_id: TIMELINE_ID,
-                    }
-                )
-            }
-        }
-
-        assert!(!harness
-            .conf
-            .timeline_path(&tenant.tenant_id, &TIMELINE_ID)
-            .exists());
-
-        assert!(!harness
-            .conf
-            .timeline_uninit_mark_file_path(tenant.tenant_id, TIMELINE_ID)
-            .exists());
-
         Ok(())
     }
 }
