@@ -174,6 +174,10 @@ def test_cannot_create_endpoint_on_non_uploaded_timeline(neon_env_builder: NeonE
 
         wait_until_paused(env, "before-upload-index-pausable")
 
+        # This log corresponds to the Timeline being inserted into Tenant::timelines -- before this,
+        # we may get a not-found error instead of a "is not active" error
+        wait_until_log(env, "created root timeline")
+
         env.neon_cli.map_branch(initial_branch, env.initial_tenant, env.initial_timeline)
 
         with pytest.raises(RuntimeError, match="is not active, state: Loading"):
@@ -214,6 +218,10 @@ def test_cannot_branch_from_non_uploaded_branch(neon_env_builder: NeonEnvBuilder
 
         wait_until_paused(env, "before-upload-index-pausable")
 
+        # This log corresponds to the Timeline being inserted into Tenant::timelines -- before this,
+        # we may get a not-found error instead of a "is not active" error
+        wait_until_log(env, "created root timeline")
+
         branch_id = TimelineId.generate()
 
         with pytest.raises(RetryError, match="too many 503 error responses"):
@@ -251,7 +259,7 @@ def test_competing_branchings_from_loading_race_to_ok_or_err(neon_env_builder: N
         ".*request{method=POST path=/v1/tenant/.*/timeline request_id=.*}: request was dropped before completing.*"
     )
     env.pageserver.allowed_errors.append(
-        ".*Error processing HTTP request: InternalServerError\\(Timeline .*/.* already exists in pageserver's memory"
+        ".*Error processing HTTP request: InternalServerError.+Already exists.*"
     )
     ps_http = env.pageserver.http_client()
 
@@ -436,8 +444,11 @@ def test_non_uploaded_branch_is_deleted_after_restart(neon_env_builder: NeonEnvB
 
 
 def wait_until_paused(env: NeonEnv, failpoint: str):
+    return wait_until_log(env, f"at failpoint {failpoint}")
+
+
+def wait_until_log(env: NeonEnv, msg: str):
     found = False
-    msg = f"at failpoint {failpoint}"
     for _ in range(20):
         time.sleep(1)
         found = env.pageserver.log_contains(msg) is not None
