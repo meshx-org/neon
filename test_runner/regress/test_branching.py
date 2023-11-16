@@ -343,12 +343,9 @@ def test_duplicate_creation(neon_env_builder: NeonEnvBuilder):
     log.info(f"Creating timeline {success_timeline}")
     ps_http.timeline_create(env.pg_version, env.initial_tenant, success_timeline, timeout=60)
 
-    ps_http.configure_failpoints(
-        ("timeline-creation-before-finish", "pause"))
-    ps_http.configure_failpoints(
-        ("before-upload-index-pausable", "pause"))
-    ps_http.configure_failpoints(
-        ("before-upload-layer-pausable", "pause"))
+    ps_http.configure_failpoints(("timeline-creation-before-finish", "pause"))
+    ps_http.configure_failpoints(("before-upload-index-pausable", "pause"))
+    ps_http.configure_failpoints(("before-upload-layer-pausable", "pause"))
 
     def start_creating_timeline():
         log.info(f"Creating (expect failure) timeline {env.initial_timeline}")
@@ -364,9 +361,9 @@ def test_duplicate_creation(neon_env_builder: NeonEnvBuilder):
         wait_until_paused(env, "timeline-creation-before-finish")
 
         # While in this "creation hung" state we will validate behavior of concurrent requests
-        #env.pageserver.allowed_errors.append(
+        # env.pageserver.allowed_errors.append(
         #    ".*request{method=POST.*.*"
-        #)
+        # )
         # While timeline creation is in progress, trying to create a timeline
         # again with the same ID should return 409
         with pytest.raises(PageserverApiException, match="Already creating"):
