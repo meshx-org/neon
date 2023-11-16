@@ -449,7 +449,7 @@ async fn timeline_create_handler(
                 json_response(StatusCode::CREATED, timeline_info)
             }
             Err(tenant::CreateTimelineError::AlreadyExists) => {
-                json_response(StatusCode::CONFLICT, ())
+                json_response(StatusCode::CONFLICT, HttpErrorBody::from_msg("Already exists".to_string()))
             }
             Err(tenant::CreateTimelineError::AncestorLsn(err)) => {
                 json_response(StatusCode::NOT_ACCEPTABLE, HttpErrorBody::from_msg(

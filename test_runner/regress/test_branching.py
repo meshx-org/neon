@@ -333,6 +333,69 @@ def test_competing_branchings_from_loading_race_to_ok_or_err(neon_env_builder: N
         create_root.join()
 
 
+def test_duplicate_creation(neon_env_builder: NeonEnvBuilder):
+    env = neon_env_builder.init_configs()
+    env.start()
+    ps_http = env.pageserver.http_client()
+    ps_http.tenant_create(env.initial_tenant)
+
+    success_timeline = TimelineId.generate()
+    log.info(f"Creating timeline {success_timeline}")
+    ps_http.timeline_create(env.pg_version, env.initial_tenant, success_timeline, timeout=60)
+
+    ps_http.configure_failpoints(
+        ("timeline-creation-before-finish", "pause"))
+    ps_http.configure_failpoints(
+        ("before-upload-index-pausable", "pause"))
+    ps_http.configure_failpoints(
+        ("before-upload-layer-pausable", "pause"))
+
+    def start_creating_timeline():
+        log.info(f"Creating (expect failure) timeline {env.initial_timeline}")
+        with pytest.raises(RequestException):
+            ps_http.timeline_create(
+                env.pg_version, env.initial_tenant, env.initial_timeline, timeout=60
+            )
+
+    t = threading.Thread(target=start_creating_timeline)
+    try:
+        t.start()
+
+        wait_until_paused(env, "timeline-creation-before-finish")
+
+        # While in this "creation hung" state we will validate behavior of concurrent requests
+        #env.pageserver.allowed_errors.append(
+        #    ".*request{method=POST.*.*"
+        #)
+        # While timeline creation is in progress, trying to create a timeline
+        # again with the same ID should return 409
+        with pytest.raises(PageserverApiException, match="Already creating"):
+            ps_http.timeline_create(
+                env.pg_version, env.initial_tenant, env.initial_timeline, timeout=60
+            )
+
+        # The error for a creation in progress is distinct from the error when
+        # trying to create a timeline which fully exists already
+        with pytest.raises(PageserverApiException, match="Already exists"):
+            ps_http.timeline_create(
+                env.pg_version, env.initial_tenant, success_timeline, timeout=60
+            )
+    finally:
+        env.pageserver.stop(immediate=True)
+        t.join()
+
+    # now without a failpoint
+    env.pageserver.start()
+
+    wait_until_tenant_active(ps_http, env.initial_tenant)
+
+    with pytest.raises(PageserverApiException, match="not found"):
+        ps_http.timeline_detail(env.initial_tenant, env.initial_timeline)
+
+    # The one successfully created timeline should still be there.
+    assert len(ps_http.timeline_list(tenant_id=env.initial_tenant)) == 1
+
+
 def test_non_uploaded_root_timeline_is_deleted_after_restart(neon_env_builder: NeonEnvBuilder):
     """
     Check that a timeline is deleted locally on subsequent restart if it never successfully uploaded during creation.

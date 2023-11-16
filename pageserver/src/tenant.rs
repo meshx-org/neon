@@ -2939,6 +2939,8 @@ impl Tenant {
                 )
             })?;
 
+        pausable_failpoint!("timeline-creation-before-finish");
+
         // All done!
         let timeline = raw_timeline.finish_creation()?;
 
