@@ -64,7 +64,17 @@ pub async fn import_timeline_from_postgres_datadir(
         .filter_entry(|entry| !entry.path().ends_with("pg_wal"));
     for entry in all_but_wal {
         let entry = entry?;
-        let metadata = entry.metadata().expect("error getting dir entry metadata");
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "Saw a transient file in pgdata path: {} ({})",
+                    entry.file_name().to_string_lossy(),
+                    e
+                );
+                continue;
+            }
+        };
         if metadata.is_file() {
             let absolute_path = entry.path();
             let relative_path = absolute_path.strip_prefix(pgdata_path)?;
