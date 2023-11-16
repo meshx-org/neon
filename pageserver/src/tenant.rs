@@ -82,6 +82,7 @@ use crate::InitializationOrder;
 
 use crate::tenant::timeline::delete::DeleteTimelineFlow;
 use crate::tenant::timeline::uninit::cleanup_timeline_directory;
+use crate::tenant::timeline::uninit::TimelineCreationError;
 use crate::virtual_file::VirtualFile;
 use crate::walredo::PostgresRedoManager;
 use crate::TEMP_FILE_SUFFIX;
@@ -381,9 +382,11 @@ impl Debug for SetStoppingError {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum CreateTimelineError {
-    #[error("a timeline with the given ID already exists")]
+pub(crate) enum CreateTimelineError {
+    #[error("Already exists")]
     AlreadyExists,
+    #[error("Already creating")]
+    AlreadyCreating,
     #[error(transparent)]
     AncestorLsn(anyhow::Error),
     #[error("ancestor timeline is not active")]
@@ -392,6 +395,15 @@ pub enum CreateTimelineError {
     ShuttingDown,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl From<TimelineCreationError> for CreateTimelineError {
+    fn from(e: TimelineCreationError) -> CreateTimelineError {
+        match e {
+            TimelineCreationError::AlreadyCreating => Self::AlreadyCreating,
+            TimelineCreationError::AlreadyExists => Self::AlreadyExists,
+        }
+    }
 }
 
 struct TenantDirectoryScan {
@@ -1433,6 +1445,7 @@ impl Tenant {
         );
         self.prepare_new_timeline(new_timeline_id, &new_metadata, initdb_lsn, None)
             .await
+            .map_err(|e| e.into())
     }
 
     /// Helper for unit tests to create an empty timeline.
@@ -1489,7 +1502,7 @@ impl Tenant {
     ///
     /// If the caller specified the timeline ID to use (`new_timeline_id`), and timeline with
     /// the same timeline ID already exists, returns CreateTimelineError::AlreadyExists.
-    pub async fn create_timeline(
+    pub(crate) async fn create_timeline(
         &self,
         new_timeline_id: TimelineId,
         ancestor_timeline_id: Option<TimelineId>,
@@ -2861,7 +2874,7 @@ impl Tenant {
         timeline_id: TimelineId,
         pg_version: u32,
         ctx: &RequestContext,
-    ) -> anyhow::Result<Arc<Timeline>> {
+    ) -> Result<Arc<Timeline>, CreateTimelineError> {
         // create a `tenant/{tenant_id}/timelines/basebackup-{timeline_id}.{TEMP_FILE_SUFFIX}/`
         // temporary directory for basebackup files for the given timeline.
         let initdb_path = path_with_suffix_extension(
@@ -2927,7 +2940,9 @@ impl Tenant {
         unfinished_timeline.maybe_spawn_flush_loop();
 
         fail::fail_point!("before-checkpoint-new-timeline", |_| {
-            anyhow::bail!("failpoint before-checkpoint-new-timeline");
+            return Err(CreateTimelineError::Other(anyhow::anyhow!(
+                "failpoint before-checkpoint-new-timeline"
+            )));
         });
 
         unfinished_timeline
@@ -2986,7 +3001,7 @@ impl Tenant {
         new_metadata: &TimelineMetadata,
         start_lsn: Lsn,
         ancestor: Option<Arc<Timeline>>,
-    ) -> anyhow::Result<UninitializedTimeline> {
+    ) -> Result<UninitializedTimeline, CreateTimelineError> {
         let tenant_id = self.tenant_id;
 
         let resources = self.build_timeline_resources(new_timeline_id);
@@ -3024,7 +3039,7 @@ impl Tenant {
         {
             error!("Failed to create initial files for timeline {tenant_id}/{new_timeline_id}, cleaning up: {e:?}");
             cleanup_timeline_directory(&timeline_path);
-            return Err(e);
+            return Err(e.into());
         }
 
         debug!("Successfully created initial files for timeline {tenant_id}/{new_timeline_id}");
