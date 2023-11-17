@@ -63,6 +63,10 @@ pub async fn import_timeline_from_postgres_datadir(
         .into_iter()
         .filter_entry(|entry| !entry.path().ends_with("pg_wal"));
     for entry in all_but_wal {
+        tracing::info!(
+            "Checking pgdata_path entry {}",
+            entry.file_name().to_string_lossy()
+        );
         let entry = entry?;
         let metadata = match entry.metadata() {
             Ok(m) => m,
