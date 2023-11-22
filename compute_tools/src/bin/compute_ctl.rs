@@ -318,13 +318,19 @@ fn main() -> Result<()> {
 
     // Wait for the child Postgres process forever. In this state Ctrl+C will
     // propagate to Postgres and it will be shut down as well.
-    if let Some(mut pg) = pg {
+    if let Some((mut pg, logs_handle)) = pg {
         // Startup is finished, exit the startup tracing span
         drop(startup_context_guard);
 
         let ecode = pg
             .wait()
             .expect("failed to start waiting on Postgres process");
+
+        // Process has exited, so we can join the logs thread.
+        let _ = logs_handle
+            .join()
+            .map_err(|e| tracing::error!("log thread panicked: {:?}", e));
+
         info!("Postgres exited with code {}, shutting down", ecode);
         exit_code = ecode.code()
     }
