@@ -65,7 +65,7 @@ fn watch_compute_activity(compute: &ComputeNode) {
                     }
                 }
 
-                // Second, is databases statistics is the same, check all backends state change,
+                // Second, if databases statistics is the same, check all backends state change,
                 // maybe there is some with more recent activity. `get_backends_state_change()`
                 // can return None or stale timestamp, so it's `compute.update_last_active()`
                 // responsibility to check if the new timestamp is more recent than the current one.
