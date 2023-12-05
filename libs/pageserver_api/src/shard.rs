@@ -76,6 +76,13 @@ impl TenantShardId {
     pub fn shard_slug(&self) -> String {
         format!("{:02x}{:02x}", self.shard_number.0, self.shard_count.0)
     }
+
+    pub fn to_index(&self) -> ShardIndex {
+        ShardIndex {
+            shard_number: self.shard_number,
+            shard_count: self.shard_count,
+        }
+    }
 }
 
 impl std::fmt::Display for TenantShardId {
@@ -145,7 +152,7 @@ impl From<[u8; 18]> for TenantShardId {
 /// shard we're dealing with, but do not need to know the full ShardIdentity (because
 /// we won't be doing any page->shard mapping), and do not need to know the fully qualified
 /// TenantShardId.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct ShardIndex {
     pub shard_number: ShardNumber,
     pub shard_count: ShardCount,
