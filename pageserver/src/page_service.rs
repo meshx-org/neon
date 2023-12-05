@@ -24,8 +24,8 @@ use pageserver_api::models::{
     PagestreamFeMessage, PagestreamGetPageRequest, PagestreamGetPageResponse,
     PagestreamNblocksRequest, PagestreamNblocksResponse,
 };
-use pageserver_api::shard::ShardCount;
 use pageserver_api::shard::ShardIndex;
+use pageserver_api::shard::{ShardCount, ShardNumber};
 use postgres_backend::{self, is_expected_io_error, AuthType, PostgresBackend, QueryError};
 use pq_proto::framed::ConnectionError;
 use pq_proto::FeStartupPacket;
@@ -438,26 +438,6 @@ impl PageServerHandler {
             None
         };
 
-        // Check that the timeline exists
-        let timeline = tenant
-            .get_timeline(timeline_id, true)
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        // Note that since one connection may contain getpage requests that target different
-        // shards (e.g. during splitting when the compute is not yet aware of the split), the tenant
-        // that we look up here may not be the one that serves all the actual requests: we will double
-        // check the mapping of key->shard later before calling into Timeline for getpage requests.
-        //
-        // We initialize our map of shard to timeline with the arbitrary Timeline we found first,
-        // and will later expand this map as we receive page requests for other shards.
-        self.shard_timelines.insert(
-            timeline.tenant_shard_id.to_index(),
-            HandlerTimeline {
-                timeline: timeline.clone(),
-                _guard: timeline.gate.enter().map_err(|_| QueryError::Shutdown)?,
-            },
-        );
-
         // switch client to COPYBOTH
         pgb.write_message_noflush(&BeMessage::CopyBothResponse)?;
         self.flush_cancellable(pgb, &timeline.cancel).await?;
@@ -513,7 +493,7 @@ impl PageServerHandler {
                     let _timer = metrics.start_timer(metrics::SmgrQueryType::GetRelExists);
                     let span = tracing::info_span!("handle_get_rel_exists_request", rel = %req.rel, req_lsn = %req.lsn);
                     (
-                        self.handle_get_rel_exists_request(&timeline, &req, &ctx)
+                        self.handle_get_rel_exists_request(tenant_id, timeline_id, &req, &ctx)
                             .instrument(span.clone())
                             .await,
                         span,
@@ -523,7 +503,7 @@ impl PageServerHandler {
                     let _timer = metrics.start_timer(metrics::SmgrQueryType::GetRelSize);
                     let span = tracing::info_span!("handle_get_nblocks_request", rel = %req.rel, req_lsn = %req.lsn);
                     (
-                        self.handle_get_nblocks_request(&timeline, &req, &ctx)
+                        self.handle_get_nblocks_request(tenant_id, timeline_id, &req, &ctx)
                             .instrument(span.clone())
                             .await,
                         span,
@@ -543,7 +523,7 @@ impl PageServerHandler {
                     let _timer = metrics.start_timer(metrics::SmgrQueryType::GetDbSize);
                     let span = tracing::info_span!("handle_db_size_request", dbnode = %req.dbnode, req_lsn = %req.lsn);
                     (
-                        self.handle_db_size_request(&timeline, &req, &ctx)
+                        self.handle_db_size_request(tenant_id, timeline_id, &req, &ctx)
                             .instrument(span.clone())
                             .await,
                         span,
@@ -556,7 +536,11 @@ impl PageServerHandler {
                 // because wait_lsn etc will drop out
                 // is_stopping(): [`Timeline::flush_and_shutdown`] has entered
                 // is_canceled(): [`Timeline::shutdown`]` has entered
-                if timeline.cancel.is_cancelled() || timeline.is_stopping() {
+                if self
+                    .shard_timelines
+                    .values()
+                    .any(|ht| ht.timeline.cancel.is_cancelled() || ht.timeline.is_stopping())
+                {
                     // If we fail to fulfil a request during shutdown, which may be _because_ of
                     // shutdown, then do not send the error to the client.  Instead just drop the
                     // connection.
@@ -768,13 +752,16 @@ impl PageServerHandler {
 
     async fn handle_get_rel_exists_request(
         &self,
-        timeline: &Timeline,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
         req: &PagestreamExistsRequest,
         ctx: &RequestContext,
     ) -> anyhow::Result<PagestreamBeMessage> {
+        let timeline = self.get_timeline_shard_zero(tenant_id, timeline_id).await?;
+
         let latest_gc_cutoff_lsn = timeline.get_latest_gc_cutoff_lsn();
         let lsn =
-            Self::wait_or_get_last_lsn(timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
+            Self::wait_or_get_last_lsn(&timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
                 .await?;
 
         let exists = timeline
@@ -788,13 +775,15 @@ impl PageServerHandler {
 
     async fn handle_get_nblocks_request(
         &self,
-        timeline: &Timeline,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
         req: &PagestreamNblocksRequest,
         ctx: &RequestContext,
     ) -> anyhow::Result<PagestreamBeMessage> {
+        let timeline = self.get_timeline_shard_zero(tenant_id, timeline_id).await?;
         let latest_gc_cutoff_lsn = timeline.get_latest_gc_cutoff_lsn();
         let lsn =
-            Self::wait_or_get_last_lsn(timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
+            Self::wait_or_get_last_lsn(&timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
                 .await?;
 
         let n_blocks = timeline.get_rel_size(req.rel, lsn, req.latest, ctx).await?;
@@ -806,13 +795,15 @@ impl PageServerHandler {
 
     async fn handle_db_size_request(
         &self,
-        timeline: &Timeline,
+        tenant_id: TenantId,
+        timeline_id: TimelineId,
         req: &PagestreamDbSizeRequest,
         ctx: &RequestContext,
     ) -> anyhow::Result<PagestreamBeMessage> {
+        let timeline = self.get_timeline_shard_zero(tenant_id, timeline_id).await?;
         let latest_gc_cutoff_lsn = timeline.get_latest_gc_cutoff_lsn();
         let lsn =
-            Self::wait_or_get_last_lsn(timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
+            Self::wait_or_get_last_lsn(&timeline, req.lsn, req.latest, &latest_gc_cutoff_lsn, ctx)
                 .await?;
 
         let total_blocks = timeline
@@ -899,24 +890,34 @@ impl PageServerHandler {
         &mut self,
         tenant_id: TenantId,
         timeline_id: TimelineId,
-        req: &PagestreamGetPageRequest,
     ) -> anyhow::Result<Arc<Timeline>, GetActiveTimelineError> {
-        if let Some((idx, tl)) = self.shard_timelines.next() {
+        if let Some((idx, tl)) = self.shard_timelines.iter().next() {
             if idx.shard_number == ShardNumber(0) {
                 return Ok(tl.timeline.clone());
+            } else {
+                // We have >0 shards and the first isn't zero -> we do not have shard zero
+                return Err(GetActiveTimelineError::Tenant(
+                    GetActiveTenantError::NotFound(mgr::GetTenantError::NotFound(tenant_id)),
+                ));
             }
         }
 
-        let key = {
-            let key = match self.get_cached_timeline_for_page(req) {
-                Ok(tl) => return Ok(tl.clone()),
-                Err(key) => key,
-            };
-            key
-        };
+        let timeline = self
+            .get_active_tenant_timeline(tenant_id, timeline_id, ShardSelector::Zero)
+            .await?;
 
-        self.load_timeline_for_page(tenant_id, timeline_id, key)
-            .await
+        self.shard_timelines.insert(
+            timeline.tenant_shard_id.to_index(),
+            HandlerTimeline {
+                timeline: timeline.clone(),
+                _guard: timeline
+                    .gate
+                    .enter()
+                    .map_err(|_| GetActiveTimelineError::Tenant(GetActiveTenantError::Cancelled))?,
+            },
+        );
+
+        return Ok(timeline);
     }
 
     async fn get_timeline_for_page(
