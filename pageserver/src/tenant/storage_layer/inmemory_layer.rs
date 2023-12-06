@@ -13,8 +13,11 @@ use crate::tenant::storage_layer::{ValueReconstructResult, ValueReconstructState
 use crate::tenant::Timeline;
 use crate::walrecord;
 use anyhow::{ensure, Result};
+use bytes::Bytes;
+use lz4_flex;
 use pageserver_api::models::InMemoryLayerInfo;
 use pageserver_api::shard::TenantShardId;
+use postgres_ffi::BLCKSZ;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use tracing::*;
@@ -128,6 +131,9 @@ impl InMemoryLayer {
                     Ok(Value::Image(img)) => {
                         write!(&mut desc, " img {} bytes", img.len())?;
                     }
+                    Ok(Value::CompressedImage(img)) => {
+                        write!(&mut desc, " compressed img {} bytes", img.len())?;
+                    }
                     Ok(Value::WalRecord(rec)) => {
                         let wal_desc = walrecord::describe_wal_record(&rec).unwrap();
                         write!(
@@ -177,6 +183,11 @@ impl InMemoryLayer {
                 match value {
                     Value::Image(img) => {
                         reconstruct_state.img = Some((*entry_lsn, img));
+                        return Ok(ValueReconstructResult::Complete);
+                    }
+                    Value::CompressedImage(img) => {
+                        let decompressed = lz4_flex::block::decompress(&img, BLCKSZ as usize)?;
+                        reconstruct_state.img = Some((*entry_lsn, Bytes::from(decompressed)));
                         return Ok(ValueReconstructResult::Complete);
                     }
                     Value::WalRecord(rec) => {

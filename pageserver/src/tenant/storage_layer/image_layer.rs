@@ -26,6 +26,7 @@
 use crate::config::PageServerConf;
 use crate::context::{PageContentKind, RequestContext, RequestContextBuilder};
 use crate::page_cache::PAGE_SZ;
+use crate::pgdatadir_mapping::is_rel_data_key;
 use crate::repository::{Key, KEY_SIZE};
 use crate::tenant::blob_io::BlobWriter;
 use crate::tenant::block_io::{BlockBuf, BlockReader, FileBlockReader};
@@ -40,8 +41,10 @@ use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use hex;
+use lz4_flex;
 use pageserver_api::models::LayerAccessKind;
 use pageserver_api::shard::TenantShardId;
+use postgres_ffi::BLCKSZ;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -436,8 +439,12 @@ impl ImageLayerInner {
                 )
                 .await
                 .with_context(|| format!("failed to read value from offset {}", offset))?;
-            let value = Bytes::from(blob);
-
+            let value = if is_rel_data_key(key) && blob.len() < BLCKSZ as usize {
+                let decompressed = lz4_flex::block::decompress(&blob, BLCKSZ as usize)?;
+                Bytes::from(decompressed)
+            } else {
+                Bytes::from(blob)
+            };
             reconstruct_state.img = Some((self.lsn, value));
             Ok(ValueReconstructResult::Complete)
         } else {
@@ -526,8 +533,17 @@ impl ImageLayerWriterInner {
     ///
     async fn put_image(&mut self, key: Key, img: &[u8]) -> anyhow::Result<()> {
         ensure!(self.key_range.contains(&key));
-        let off = self.blob_writer.write_blob(img).await?;
-
+        let off;
+        if is_rel_data_key(key) {
+            let compressed = lz4_flex::block::compress(img);
+            if compressed.len() < img.len() {
+                off = self.blob_writer.write_blob(&compressed).await?;
+            } else {
+                off = self.blob_writer.write_blob(img).await?;
+            }
+        } else {
+            off = self.blob_writer.write_blob(img).await?;
+        }
         let mut keybuf: [u8; KEY_SIZE] = [0u8; KEY_SIZE];
         key.write_to_byte_slice(&mut keybuf);
         self.tree.append(&keybuf, off)?;

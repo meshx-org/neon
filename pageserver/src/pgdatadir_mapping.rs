@@ -13,7 +13,8 @@ use crate::repository::*;
 use crate::walrecord::NeonWalRecord;
 use anyhow::Context;
 use bytes::{Buf, Bytes};
-use pageserver_api::key::is_rel_block_key;
+use lz4_flex;
+use pageserver_api::key::{is_rel_block_key, is_rel_data_key};
 use pageserver_api::reltag::{RelTag, SlruKind};
 use postgres_ffi::relfile_utils::{FSM_FORKNUM, VISIBILITYMAP_FORKNUM};
 use postgres_ffi::BLCKSZ;
@@ -897,7 +898,15 @@ impl<'a> DatadirModification<'a> {
         img: Bytes,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(rel.relnode != 0, RelationError::InvalidRelnode);
-        self.put(rel_block_to_key(rel, blknum), Value::Image(img));
+        let compressed = lz4_flex::block::compress(&img);
+        if compressed.len() < img.len() {
+            self.put(
+                rel_block_to_key(rel, blknum),
+                Value::CompressedImage(Bytes::from(compressed)),
+            );
+        } else {
+            self.put(rel_block_to_key(rel, blknum), Value::Image(img));
+        }
         Ok(())
     }
 
@@ -1383,6 +1392,10 @@ impl<'a> DatadirModification<'a> {
         if let Some(value) = self.pending_updates.get(&key) {
             if let Value::Image(img) = value {
                 Ok(img.clone())
+            } else if let Value::CompressedImage(img) = value {
+                let decompressed = lz4_flex::block::decompress(&img, BLCKSZ as usize)
+                    .map_err(|msg| PageReconstructError::Other(anyhow::anyhow!(msg)))?;
+                Ok(Bytes::from(decompressed))
             } else {
                 // Currently, we never need to read back a WAL record that we
                 // inserted in the same "transaction". All the metadata updates
