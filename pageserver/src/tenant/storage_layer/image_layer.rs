@@ -26,7 +26,6 @@
 use crate::config::PageServerConf;
 use crate::context::{PageContentKind, RequestContext, RequestContextBuilder};
 use crate::page_cache::PAGE_SZ;
-use crate::pgdatadir_mapping::is_rel_data_key;
 use crate::repository::{Key, KEY_SIZE};
 use crate::tenant::blob_io::BlobWriter;
 use crate::tenant::block_io::{BlockBuf, BlockReader, FileBlockReader};
@@ -42,6 +41,7 @@ use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use hex;
 use lz4_flex;
+use pageserver_api::key::is_rel_data_key;
 use pageserver_api::models::LayerAccessKind;
 use pageserver_api::shard::TenantShardId;
 use postgres_ffi::BLCKSZ;
