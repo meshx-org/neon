@@ -857,9 +857,18 @@ impl PageServerHandler {
                 .await?
         };
 
-        Ok(PagestreamBeMessage::GetPage(PagestreamGetPageResponse {
-            page,
-        }))
+        let compressed = lz4_flex::block::compress(&page);
+        if compressed.len() < page.len() {
+            Ok(PagestreamBeMessage::GetCompressedPage(
+                PagestreamGetPageResponse {
+                    page: Bytes::from(compressed),
+                },
+            ))
+        } else {
+            Ok(PagestreamBeMessage::GetPage(PagestreamGetPageResponse {
+                page,
+            }))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
