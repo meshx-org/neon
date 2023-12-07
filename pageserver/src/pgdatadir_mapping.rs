@@ -14,7 +14,7 @@ use crate::walrecord::NeonWalRecord;
 use anyhow::Context;
 use bytes::{Buf, Bytes};
 use lz4_flex;
-use pageserver_api::key::{is_rel_block_key, is_rel_data_key};
+use pageserver_api::key::is_rel_block_key;
 use pageserver_api::reltag::{RelTag, SlruKind};
 use postgres_ffi::relfile_utils::{FSM_FORKNUM, VISIBILITYMAP_FORKNUM};
 use postgres_ffi::BLCKSZ;
