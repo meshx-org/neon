@@ -35,7 +35,9 @@ use crate::tenant::storage_layer::{
 };
 use crate::tenant::Timeline;
 use crate::virtual_file::VirtualFile;
-use crate::{IMAGE_FILE_MAGIC, LZ4_COMPRESSION, NO_COMPRESSION, STORAGE_FORMAT_VERSION, TEMP_FILE_SUFFIX};
+use crate::{
+    IMAGE_FILE_MAGIC, LZ4_COMPRESSION, NO_COMPRESSION, STORAGE_FORMAT_VERSION, TEMP_FILE_SUFFIX,
+};
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
