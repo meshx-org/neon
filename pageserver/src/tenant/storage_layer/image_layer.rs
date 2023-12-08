@@ -35,7 +35,7 @@ use crate::tenant::storage_layer::{
 };
 use crate::tenant::Timeline;
 use crate::virtual_file::VirtualFile;
-use crate::{IMAGE_FILE_MAGIC, STORAGE_FORMAT_VERSION, TEMP_FILE_SUFFIX};
+use crate::{IMAGE_FILE_MAGIC, LZ4_COMPRESSION, NO_COMPRESSION, STORAGE_FORMAT_VERSION, TEMP_FILE_SUFFIX};
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -85,6 +85,10 @@ pub struct Summary {
     pub index_start_blk: u32,
     /// Block within the 'index', where the B-tree root page is stored
     pub index_root_blk: u32,
+    /// Compression algorithm used for relation pages. Compressed size should be always
+    /// smaller than original size, otherwise original image is stored instead of conpressed image.
+    /// Old storage versions (format_version < 4) do not have this fields and it is deseriealized as 0=NO+COMPRESSION
+    pub compression_alg: u8,
     // the 'values' part starts after the summary header, on block 1.
 }
 
@@ -116,6 +120,7 @@ impl Summary {
 
             index_start_blk: 0,
             index_root_blk: 0,
+            compression_alg: LZ4_COMPRESSION,
         }
     }
 }
@@ -150,6 +155,8 @@ pub struct ImageLayerInner {
     // values copied from summary
     index_start_blk: u32,
     index_root_blk: u32,
+    format_version: u16,
+    compression_alg: u8,
 
     lsn: Lsn,
 
@@ -162,6 +169,8 @@ impl std::fmt::Debug for ImageLayerInner {
         f.debug_struct("ImageLayerInner")
             .field("index_start_blk", &self.index_start_blk)
             .field("index_root_blk", &self.index_root_blk)
+            .field("format_version", &self.format_version)
+            .field("compression_alg", &self.compression_alg)
             .finish()
     }
 }
@@ -387,10 +396,20 @@ impl ImageLayerInner {
         let actual_summary =
             Summary::des_prefix(summary_blk.as_ref()).context("deserialize first block")?;
 
+        if actual_summary.compression_alg != LZ4_COMPRESSION
+            && actual_summary.compression_alg != NO_COMPRESSION
+        {
+            bail!(
+                "Unsupported compression algorithm: {}",
+                actual_summary.compression_alg
+            );
+        }
+
         if let Some(mut expected_summary) = summary {
             // production code path
             expected_summary.index_start_blk = actual_summary.index_start_blk;
             expected_summary.index_root_blk = actual_summary.index_root_blk;
+            expected_summary.compression_alg = actual_summary.compression_alg;
 
             if actual_summary != expected_summary {
                 bail!(
@@ -404,6 +423,8 @@ impl ImageLayerInner {
         Ok(Ok(ImageLayerInner {
             index_start_blk: actual_summary.index_start_blk,
             index_root_blk: actual_summary.index_root_blk,
+            format_version: actual_summary.format_version,
+            compression_alg: actual_summary.compression_alg,
             lsn,
             file,
         }))
@@ -439,7 +460,11 @@ impl ImageLayerInner {
                 )
                 .await
                 .with_context(|| format!("failed to read value from offset {}", offset))?;
-            let value = if is_rel_data_key(key) && blob.len() < BLCKSZ as usize {
+
+            let value = if self.compression_alg == LZ4_COMPRESSION
+                && is_rel_data_key(key)
+                && blob.len() < BLCKSZ as usize
+            {
                 let decompressed = lz4_flex::block::decompress(&blob, BLCKSZ as usize)?;
                 Bytes::from(decompressed)
             } else {
@@ -535,6 +560,7 @@ impl ImageLayerWriterInner {
         ensure!(self.key_range.contains(&key));
         let off;
         if is_rel_data_key(key) {
+            assert_eq!(img.len(), BLCKSZ as usize);
             let compressed = lz4_flex::block::compress(img);
             if compressed.len() < img.len() {
                 off = self.blob_writer.write_blob(&compressed).await?;
@@ -578,6 +604,7 @@ impl ImageLayerWriterInner {
             lsn: self.lsn,
             index_start_blk,
             index_root_blk,
+            compression_alg: LZ4_COMPRESSION,
         };
 
         let mut buf = smallvec::SmallVec::<[u8; PAGE_SZ]>::new();
