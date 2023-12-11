@@ -1131,6 +1131,7 @@ impl TenantManager {
             self.resources.remote_storage.clone(),
             &TENANTS,
             tenant,
+            &self.cancel,
         )
         .await;
 
