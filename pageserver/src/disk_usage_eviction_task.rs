@@ -853,30 +853,6 @@ async fn collect_eviction_candidates(
     Ok(EvictionCandidates::Finished(candidates))
 }
 
-struct TimelineKey(Arc<Timeline>);
-
-impl PartialEq for TimelineKey {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for TimelineKey {}
-
-impl std::hash::Hash for TimelineKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
-
-impl std::ops::Deref for TimelineKey {
-    type Target = Timeline;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
-    }
-}
-
 /// A totally ordered f32 subset we can use with sorting functions.
 mod finite_f32 {
 
