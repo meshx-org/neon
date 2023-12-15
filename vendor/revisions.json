@@ -1,5 +1,11 @@
 {
+<<<<<<< HEAD
     "postgres-v16": "225071f482774943854c2eec4540757e01171557",
     "postgres-v15": "a2dc225ddfc8cae1849aa2316f435c58f0333d8c",
     "postgres-v14": "03358bb0b5e0d33c238710139e768db9e75cfcc8"
+=======
+    "postgres-v16": "ce3b15942c91adec8e83a43d2cb713038f2fcf53",
+    "postgres-v15": "7a9d31fd826d251b7f62f1f83808bcd00c5ef554",
+    "postgres-v14": "3b28a698276dd17aadd883adc8e0a9ff0f87be0f"
+>>>>>>> a36bef8ab (Download SLRU segments on demand)
 }

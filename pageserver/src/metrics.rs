@@ -1006,6 +1006,7 @@ pub enum SmgrQueryType {
     GetRelSize,
     GetPageAtLsn,
     GetDbSize,
+    GetSlruSegment,
 }
 
 #[derive(Debug)]
@@ -1125,6 +1126,7 @@ mod smgr_query_time_tests {
             (GetRelSize, "get_rel_size"),
             (GetPageAtLsn, "get_page_at_lsn"),
             (GetDbSize, "get_db_size"),
+            (GetSlruSegment, "get_slru_segment"),
         ];
         for (op, expect) in expect {
             let actual: &'static str = op.into();
