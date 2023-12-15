@@ -717,14 +717,10 @@ impl ComputeNode {
         // 'Close' connection
         drop(client);
 
-        /*
-        thread::spawn(
-            move ||
-            {
-                let mut client = Client::connect(connstr.as_str(), NoTls)?;
-                handle_migrations(&mut client)
-            });
-         */
+        thread::spawn(move || {
+            let mut client = Client::connect(connstr.as_str(), NoTls)?;
+            handle_migrations(&mut client)
+        });
         Ok(())
     }
 
