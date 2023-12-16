@@ -11,7 +11,7 @@
 >>>>>>> a36bef8ab (Download SLRU segments on demand)
 =======
     "postgres-v16": "eb34fd704e46ff69932795c871d9be0b736db3d2",
-    "postgres-v15": "fefc07a8ac902316dbd31b51d5ed4c7ea6d8ceca",
+    "postgres-v15": "2330e5f6dce9999d3ac00d881efad973fa212165",
     "postgres-v14": "4feaaa0aee636ca48f37e9d14db2efcf3d6f77e5"
 >>>>>>> 051df8f48 (Bump Postgres version)
 }
