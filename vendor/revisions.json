@@ -18,6 +18,10 @@
 =======
     "postgres-v16": "c04811e8246d3eaa9a642ef508841fa5eb8aed86",
     "postgres-v15": "2d2b710c84ab968d3560cdaab69851d8a8756b3d",
+<<<<<<< HEAD
     "postgres-v14": "b24f0a4224d5ad82c8489d501d516ab353cfa37d"
 >>>>>>> ba96ef210 (Bump Postgres version)
+=======
+    "postgres-v14": "5abac3cefadcdc07b2cbad8fb676dd3d47ba3f8d"
+>>>>>>> 323fbecf2 (Bump Postgres version)
 }
