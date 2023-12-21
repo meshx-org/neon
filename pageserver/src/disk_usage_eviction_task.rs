@@ -196,7 +196,9 @@ async fn disk_usage_eviction_task_iteration(
     let tenants_dir = tenant_manager.get_conf().tenants_path();
     let usage_pre = filesystem_level_usage::get(&tenants_dir, task_config)
         .context("get filesystem-level disk usage before evictions")?;
-    let res = disk_usage_eviction_task_iteration_impl(state, storage, usage_pre, cancel).await;
+    let res =
+        disk_usage_eviction_task_iteration_impl(state, storage, usage_pre, tenant_manager, cancel)
+            .await;
     match res {
         Ok(outcome) => {
             debug!(?outcome, "disk_usage_eviction_iteration finished");
@@ -282,6 +284,7 @@ pub(crate) async fn disk_usage_eviction_task_iteration_impl<U: Usage>(
     state: &State,
     _storage: &GenericRemoteStorage,
     usage_pre: U,
+    tenant_manager: &Arc<TenantManager>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<IterationOutcome<U>> {
     // use tokio's mutex to get a Sync guard (instead of std::sync::Mutex)
@@ -301,7 +304,7 @@ pub(crate) async fn disk_usage_eviction_task_iteration_impl<U: Usage>(
         "running disk usage based eviction due to pressure"
     );
 
-    let candidates = match collect_eviction_candidates(cancel).await? {
+    let candidates = match collect_eviction_candidates(tenant_manager, cancel).await? {
         EvictionCandidates::Cancelled => {
             return Ok(IterationOutcome::Cancelled);
         }
@@ -602,6 +605,7 @@ enum EvictionCandidates {
 /// after exhauting the `Above` partition.
 /// So, we did not respect each tenant's min_resident_size.
 async fn collect_eviction_candidates(
+    tenant_manager: &Arc<TenantManager>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<EvictionCandidates> {
     // get a snapshot of the list of tenants
@@ -611,11 +615,11 @@ async fn collect_eviction_candidates(
 
     let mut candidates = Vec::new();
 
-    for (tenant_id, _state) in &tenants {
+    for (tenant_id, _state) in tenants {
         if cancel.is_cancelled() {
             return Ok(EvictionCandidates::Cancelled);
         }
-        let tenant = match tenant::mgr::get_tenant(*tenant_id, true) {
+        let tenant = match tenant::mgr::get_tenant(tenant_id, true) {
             Ok(tenant) => tenant,
             Err(e) => {
                 // this can happen if tenant has lifecycle transition after we fetched it
@@ -692,6 +696,36 @@ async fn collect_eviction_candidates(
             cumsum += i128::from(candidate.layer.get_file_size());
             candidates.push((partition, candidate));
         }
+    }
+
+    // FIXME: this is a long loop over all secondary locations.  At the least, respect
+    // cancellation here, but really we need to break up the loop.  We could extract the
+    // Arc<SecondaryTenant>s and iterate over them with some tokio yields in there.  Ideally
+    // though we should just reduce the total amount of work: our eviction goals do not require
+    // listing absolutely every layer in every tenant: we could sample this.
+    let mut secondary_tenants = Vec::new();
+    tenant_manager.foreach_secondary_tenants(
+        |_tenant_shard_id: &TenantShardId, state: &Arc<SecondaryTenant>| {
+            secondary_tenants.push(state.clone());
+        },
+    );
+
+    for secondary_tenant in secondary_tenants {
+        let mut layer_info = secondary_tenant.get_layers_for_eviction();
+
+        layer_info
+            .resident_layers
+            .sort_unstable_by_key(|layer_info| std::cmp::Reverse(layer_info.last_activity_ts));
+
+        candidates.extend(layer_info.resident_layers.into_iter().map(|candidate| {
+            (
+                // Secondary locations' layers are always considered above the min resident size,
+                // i.e. secondary locations are permitted to be trimmed to zero layers if all
+                // the layers have sufficiently old access times.
+                MinResidentSizePartition::Above,
+                candidate,
+            )
+        }));
     }
 
     debug_assert!(MinResidentSizePartition::Above < MinResidentSizePartition::Below,
