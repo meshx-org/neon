@@ -60,8 +60,7 @@ use crate::{
 };
 use crate::{deletion_queue::DeletionQueueClient, tenant::remote_timeline_client::StopError};
 use crate::{
-    disk_usage_eviction_task::LocalLayerInfoForDiskUsageEviction,
-    tenant::storage_layer::delta_layer::DeltaEntry,
+    disk_usage_eviction_task::EvictionCandidate, tenant::storage_layer::delta_layer::DeltaEntry,
 };
 
 use crate::config::PageServerConf;
@@ -2094,7 +2093,7 @@ impl Timeline {
         let layer_file_names = eviction_info
             .resident_layers
             .iter()
-            .map(|l| l.layer.layer_desc().filename())
+            .map(|l| l.layer.get_name())
             .collect::<Vec<_>>();
 
         let decorated = match remote_client.get_layers_metadata(layer_file_names) {
@@ -2112,7 +2111,7 @@ impl Timeline {
         .filter_map(|(layer, remote_info)| {
             remote_info.map(|remote_info| {
                 HeatMapLayer::new(
-                    layer.layer.layer_desc().filename(),
+                    layer.layer.get_name(),
                     IndexLayerMetadata::from(remote_info),
                     layer.last_activity_ts,
                 )
@@ -4409,8 +4408,8 @@ impl Timeline {
                 SystemTime::now()
             });
 
-            resident_layers.push(LocalLayerInfoForDiskUsageEviction {
-                layer: l.drop_eviction_guard(),
+            resident_layers.push(EvictionCandidate {
+                layer: l.drop_eviction_guard().into(),
                 last_activity_ts,
             });
         }

@@ -462,20 +462,20 @@ pub(crate) async fn disk_usage_eviction_task_iteration_impl<U: Usage>(
 }
 
 #[derive(Clone)]
-struct SecondaryLayer {
-    secondary_tenant: Arc<SecondaryTenant>,
-    timeline_id: TimelineId,
-    name: LayerFileName,
-    metadata: LayerFileMetadata,
+pub(crate) struct EvictionSecondaryLayer {
+    pub(crate) secondary_tenant: Arc<SecondaryTenant>,
+    pub(crate) timeline_id: TimelineId,
+    pub(crate) name: LayerFileName,
+    pub(crate) metadata: LayerFileMetadata,
 }
 
 /// Full [`Layer`] objects are specific to tenants in attached mode.  This type is a layer
 /// of indirection to store either a `Layer`, or a reference to a secondary tenant and a layer name.
 #[derive(Clone)]
-enum EvictionLayer {
+pub(crate) enum EvictionLayer {
     Attached(Layer),
     #[allow(dead_code)]
-    Secondary(SecondaryLayer),
+    Secondary(EvictionSecondaryLayer),
 }
 
 impl From<Layer> for EvictionLayer {
@@ -485,28 +485,28 @@ impl From<Layer> for EvictionLayer {
 }
 
 impl EvictionLayer {
-    fn get_tenant_shard_id(&self) -> &TenantShardId {
+    pub(crate) fn get_tenant_shard_id(&self) -> &TenantShardId {
         match self {
             Self::Attached(l) => &l.layer_desc().tenant_shard_id,
             Self::Secondary(sl) => sl.secondary_tenant.get_tenant_shard_id(),
         }
     }
 
-    fn get_timeline_id(&self) -> &TimelineId {
+    pub(crate) fn get_timeline_id(&self) -> &TimelineId {
         match self {
             Self::Attached(l) => &l.layer_desc().timeline_id,
             Self::Secondary(sl) => &sl.timeline_id,
         }
     }
 
-    fn get_name(&self) -> LayerFileName {
+    pub(crate) fn get_name(&self) -> LayerFileName {
         match self {
             Self::Attached(l) => l.layer_desc().filename(),
             Self::Secondary(sl) => sl.name.clone(),
         }
     }
 
-    fn get_file_size(&self) -> u64 {
+    pub(crate) fn get_file_size(&self) -> u64 {
         match self {
             Self::Attached(l) => l.layer_desc().file_size,
             Self::Secondary(sl) => sl.metadata.file_size(),
@@ -515,24 +515,30 @@ impl EvictionLayer {
 }
 
 #[derive(Clone)]
-struct EvictionCandidate {
-    layer: EvictionLayer,
-    last_activity_ts: SystemTime,
+pub(crate) struct EvictionCandidate {
+    pub(crate) layer: EvictionLayer,
+    pub(crate) last_activity_ts: SystemTime,
+}
+
+impl std::fmt::Display for EvictionLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Attached(l) => l.fmt(f),
+            Self::Secondary(sl) => {
+                write!(f, "{}/{}", sl.timeline_id, sl.name)
+            }
+        }
+    }
 }
 
 pub(crate) struct DiskUsageEvictionInfo {
     /// Timeline's largest layer (remote or resident)
     pub max_layer_size: Option<u64>,
     /// Timeline's resident layers
-    pub resident_layers: Vec<LocalLayerInfoForDiskUsageEviction>,
+    pub resident_layers: Vec<EvictionCandidate>,
 }
 
-pub(crate) struct LocalLayerInfoForDiskUsageEviction {
-    pub layer: Layer,
-    pub last_activity_ts: SystemTime,
-}
-
-impl std::fmt::Debug for LocalLayerInfoForDiskUsageEviction {
+impl std::fmt::Debug for EvictionCandidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // format the tv_sec, tv_nsec into rfc3339 in case someone is looking at it
         // having to allocate a string to this is bad, but it will rarely be formatted
@@ -548,12 +554,6 @@ impl std::fmt::Debug for LocalLayerInfoForDiskUsageEviction {
             .field("layer", &DisplayIsDebug(&self.layer))
             .field("last_activity", &ts)
             .finish()
-    }
-}
-
-impl LocalLayerInfoForDiskUsageEviction {
-    pub(crate) fn file_size(&self) -> u64 {
-        self.layer.layer_desc().file_size
     }
 }
 
@@ -683,19 +683,14 @@ async fn collect_eviction_candidates(
         tenant_candidates
             .sort_unstable_by_key(|layer_info| std::cmp::Reverse(layer_info.last_activity_ts));
         let mut cumsum: i128 = 0;
-        for layer_info in tenant_candidates.into_iter() {
-            let file_size = layer_info.file_size();
-            let candidate = EvictionCandidate {
-                last_activity_ts: layer_info.last_activity_ts,
-                layer: layer_info.layer.into(),
-            };
+        for candidate in tenant_candidates.into_iter() {
             let partition = if cumsum > min_resident_size as i128 {
                 MinResidentSizePartition::Above
             } else {
                 MinResidentSizePartition::Below
             };
+            cumsum += i128::from(candidate.layer.get_file_size());
             candidates.push((partition, candidate));
-            cumsum += i128::from(file_size);
         }
     }
 
