@@ -28,7 +28,7 @@ use storage_broker::proto::TenantTimelineId as ProtoTenantTimelineId;
 use crate::receive_wal::WalReceivers;
 use crate::recovery::{recovery_main, Donor, RecoveryNeededInfo};
 use crate::safekeeper::{
-    AcceptorProposerMessage, ProposerAcceptorMessage, SafeKeeper, SafeKeeperState,
+    AcceptorProposerMessage, ProposerAcceptorMessage, SafeKeeper, SafeKeeperPersistentState,
     SafekeeperMemState, ServerInfo, Term, TermLsn, INVALID_TERM,
 };
 use crate::send_wal::WalSenders;
@@ -121,7 +121,7 @@ impl SharedState {
     fn create_new(
         conf: &SafeKeeperConf,
         ttid: &TenantTimelineId,
-        state: SafeKeeperState,
+        state: SafeKeeperPersistentState,
     ) -> Result<Self> {
         if state.server.wal_seg_size == 0 {
             bail!(TimelineError::UninitializedWalSegSize(*ttid));
@@ -403,7 +403,8 @@ impl Timeline {
         let (term_flush_lsn_watch_tx, term_flush_lsn_watch_rx) =
             watch::channel(TermLsn::from((INVALID_TERM, Lsn::INVALID)));
         let (cancellation_tx, cancellation_rx) = watch::channel(false);
-        let state = SafeKeeperState::new(&ttid, server_info, vec![], commit_lsn, local_start_lsn);
+        let state =
+            SafeKeeperPersistentState::new(&ttid, server_info, vec![], commit_lsn, local_start_lsn);
 
         Ok(Timeline {
             ttid,
@@ -646,7 +647,7 @@ impl Timeline {
     }
 
     /// Returns state of the timeline.
-    pub async fn get_state(&self) -> (SafekeeperMemState, SafeKeeperState) {
+    pub async fn get_state(&self) -> (SafekeeperMemState, SafeKeeperPersistentState) {
         let state = self.write_shared_state().await;
         (state.sk.inmem.clone(), state.sk.state.clone())
     }

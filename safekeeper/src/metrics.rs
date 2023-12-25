@@ -21,7 +21,7 @@ use utils::pageserver_feedback::PageserverFeedback;
 use utils::{id::TenantTimelineId, lsn::Lsn};
 
 use crate::{
-    safekeeper::{SafeKeeperState, SafekeeperMemState},
+    safekeeper::{SafeKeeperPersistentState, SafekeeperMemState},
     GlobalTimelines,
 };
 
@@ -309,7 +309,7 @@ pub struct FullTimelineInfo {
 
     pub epoch_start_lsn: Lsn,
     pub mem_state: SafekeeperMemState,
-    pub persisted_state: SafeKeeperState,
+    pub persisted_state: SafeKeeperPersistentState,
 
     pub flush_lsn: Lsn,
     pub remote_consistent_lsn: Lsn,

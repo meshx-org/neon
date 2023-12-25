@@ -19,7 +19,7 @@ use utils::id::TenantTimelineId;
 use utils::id::{TenantId, TimelineId};
 use utils::lsn::Lsn;
 
-use crate::safekeeper::SafeKeeperState;
+use crate::safekeeper::SafeKeeperPersistentState;
 use crate::safekeeper::SafekeeperMemState;
 use crate::safekeeper::TermHistory;
 use crate::SafeKeeperConf;
@@ -139,7 +139,7 @@ pub struct Config {
 pub struct Timeline {
     pub tenant_id: TenantId,
     pub timeline_id: TimelineId,
-    pub control_file: Option<SafeKeeperState>,
+    pub control_file: Option<SafeKeeperPersistentState>,
     pub memory: Option<Memory>,
     pub disk_content: Option<DiskContent>,
 }
