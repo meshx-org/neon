@@ -18,6 +18,7 @@
 =======
     "postgres-v16": "c04811e8246d3eaa9a642ef508841fa5eb8aed86",
 <<<<<<< HEAD
+<<<<<<< HEAD
     "postgres-v15": "2d2b710c84ab968d3560cdaab69851d8a8756b3d",
 <<<<<<< HEAD
     "postgres-v14": "b24f0a4224d5ad82c8489d501d516ab353cfa37d"
@@ -26,6 +27,9 @@
 =======
     "postgres-v15": "ee219e1df58bb016a870f1c61b619be66a66f060",
 >>>>>>> b24c1d77a (Bump Postgres version)
+=======
+    "postgres-v15": "8f1708afb55c9ec6f7b6426bfbada62a5b5297d5",
+>>>>>>> b97ae081e (vendor/postgres-v15)
     "postgres-v14": "5abac3cefadcdc07b2cbad8fb676dd3d47ba3f8d"
 >>>>>>> 323fbecf2 (Bump Postgres version)
 }
