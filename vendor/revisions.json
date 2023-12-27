@@ -3,6 +3,7 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     "postgres-v16": "225071f482774943854c2eec4540757e01171557",
     "postgres-v15": "a2dc225ddfc8cae1849aa2316f435c58f0333d8c",
     "postgres-v14": "03358bb0b5e0d33c238710139e768db9e75cfcc8"
@@ -54,4 +55,9 @@
     "postgres-v15": "dc3c7c340df1198998939dd1cfea6ad54afc3160",
     "postgres-v14": "fce3b926502ce2957c62b36be19b56dd53b8031f"
 >>>>>>> 8c0b0f3c1 (Bump postgres version)
+=======
+    "postgres-v16": "c04811e8246d3eaa9a642ef508841fa5eb8aed86",
+    "postgres-v15": "2d2b710c84ab968d3560cdaab69851d8a8756b3d",
+    "postgres-v14": "5abac3cefadcdc07b2cbad8fb676dd3d47ba3f8d"
+>>>>>>> cf0802f5e (Undo extra log messages)
 }
