@@ -2,6 +2,7 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     "postgres-v16": "225071f482774943854c2eec4540757e01171557",
     "postgres-v15": "a2dc225ddfc8cae1849aa2316f435c58f0333d8c",
     "postgres-v14": "03358bb0b5e0d33c238710139e768db9e75cfcc8"
@@ -48,4 +49,9 @@
 >>>>>>> cb257f755 (Bump postgres version)
     "postgres-v14": "5abac3cefadcdc07b2cbad8fb676dd3d47ba3f8d"
 >>>>>>> 323fbecf2 (Bump Postgres version)
+=======
+    "postgres-v16": "4f6e1fc006fec63b120fbe8ba04e1040820a977e",
+    "postgres-v15": "e4ae92d7ad0e51c76b0d9b0b056f2e6d7344ad2f",
+    "postgres-v14": "fce3b926502ce2957c62b36be19b56dd53b8031f"
+>>>>>>> 8c0b0f3c1 (Bump postgres version)
 }
