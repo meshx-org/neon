@@ -6549,6 +6549,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "once_cell",
+ "parquet",
  "prost",
  "rand 0.8.5",
  "regex",
