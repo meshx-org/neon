@@ -13,12 +13,15 @@ use std::time::Instant;
 
 use crate::control_file_upgrade::upgrade_control_file;
 use crate::metrics::PERSIST_CONTROL_FILE_SECONDS;
-use crate::safekeeper::{SafeKeeperPersistentState, SK_FORMAT_VERSION, SK_MAGIC};
+use crate::state::SafeKeeperPersistentState;
 use utils::{bin_ser::LeSer, id::TenantTimelineId};
 
 use crate::SafeKeeperConf;
 
 use std::convert::TryInto;
+
+pub const SK_MAGIC: u32 = 0xcafeceefu32;
+pub const SK_FORMAT_VERSION: u32 = 7;
 
 // contains persistent metadata for safekeeper
 const CONTROL_FILE_NAME: &str = "safekeeper.control";
@@ -246,7 +249,7 @@ impl Storage for FileStorage {
 mod test {
     use super::FileStorage;
     use super::*;
-    use crate::{safekeeper::SafeKeeperPersistentState, SafeKeeperConf};
+    use crate::SafeKeeperConf;
     use anyhow::Result;
     use utils::{id::TenantTimelineId, lsn::Lsn};
 

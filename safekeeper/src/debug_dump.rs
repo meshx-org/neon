@@ -19,12 +19,12 @@ use utils::id::TenantTimelineId;
 use utils::id::{TenantId, TimelineId};
 use utils::lsn::Lsn;
 
-use crate::safekeeper::SafeKeeperPersistentState;
-use crate::safekeeper::SafekeeperMemState;
 use crate::safekeeper::TermHistory;
 use crate::SafeKeeperConf;
 
 use crate::send_wal::WalSenderState;
+use crate::state::SafeKeeperPersistentState;
+use crate::state::SafekeeperMemState;
 use crate::GlobalTimelines;
 
 /// Various filters that influence the resulting JSON output.

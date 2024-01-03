@@ -21,7 +21,8 @@ use crate::safekeeper::{AcceptorProposerMessage, AppendResponse, ServerInfo};
 use crate::safekeeper::{
     AppendRequest, AppendRequestHeader, ProposerAcceptorMessage, ProposerElected,
 };
-use crate::safekeeper::{SafeKeeperPersistentState, Term, TermHistory, TermLsn};
+use crate::safekeeper::{Term, TermHistory, TermLsn};
+use crate::state::SafeKeeperPersistentState;
 use crate::timeline::Timeline;
 use crate::GlobalTimelines;
 use postgres_backend::PostgresBackend;

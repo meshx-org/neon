@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::*;
 
 use crate::metrics::{time_io_closure, WalStorageMetrics, REMOVED_WAL_SEGMENTS};
-use crate::safekeeper::SafeKeeperPersistentState;
+use crate::state::SafeKeeperPersistentState;
 use crate::wal_backup::read_object;
 use crate::SafeKeeperConf;
 use postgres_ffi::waldecoder::WalStreamDecoder;

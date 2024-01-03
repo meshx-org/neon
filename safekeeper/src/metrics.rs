@@ -21,7 +21,7 @@ use utils::pageserver_feedback::PageserverFeedback;
 use utils::{id::TenantTimelineId, lsn::Lsn};
 
 use crate::{
-    safekeeper::{SafeKeeperPersistentState, SafekeeperMemState},
+    state::{SafeKeeperPersistentState, SafekeeperMemState},
     GlobalTimelines,
 };
 
@@ -312,7 +312,6 @@ pub struct FullTimelineInfo {
     pub persisted_state: SafeKeeperPersistentState,
 
     pub flush_lsn: Lsn,
-    pub remote_consistent_lsn: Lsn,
 
     pub wal_storage: WalStorageMetrics,
 }
@@ -608,7 +607,7 @@ impl Collector for TimelineCollector {
                 .set(tli.mem_state.peer_horizon_lsn.into());
             self.remote_consistent_lsn
                 .with_label_values(labels)
-                .set(tli.remote_consistent_lsn.into());
+                .set(tli.mem_state.remote_consistent_lsn.into());
             self.timeline_active
                 .with_label_values(labels)
                 .set(tli.timeline_is_active as u64);

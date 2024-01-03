@@ -1,7 +1,7 @@
 //! Code to deal with safekeeper control file upgrades
-use crate::safekeeper::{
-    AcceptorState, PersistedPeers, PgUuid, SafeKeeperPersistentState, ServerInfo, Term,
-    TermHistory, TermLsn,
+use crate::{
+    safekeeper::{AcceptorState, PgUuid, ServerInfo, Term, TermHistory, TermLsn},
+    state::{PersistedPeers, SafeKeeperPersistentState},
 };
 use anyhow::{bail, Result};
 use pq_proto::SystemId;
