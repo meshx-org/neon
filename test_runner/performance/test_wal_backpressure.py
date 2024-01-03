@@ -30,9 +30,7 @@ def pg_compare(request) -> PgCompare:
 
         return fixture
     else:
-        assert (
-            len(x) == 2
-        ), f"request param ({request.param}) should have a format of \
+        assert len(x) == 2, f"request param ({request.param}) should have a format of \
         `neon_{{safekeepers_enable_fsync}}`"
 
         # `NeonCompare` interface

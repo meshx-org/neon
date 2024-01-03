@@ -389,9 +389,7 @@ def test_tenant_detach_ignored_tenant(neon_simple_env: NeonEnv):
 
     # assert the tenant does not exists in the Pageserver
     tenants_after_detach = [tenant["id"] for tenant in client.tenant_list()]
-    assert (
-        tenant_id not in tenants_after_detach
-    ), f"Ignored and then detached tenant {tenant_id} \
+    assert tenant_id not in tenants_after_detach, f"Ignored and then detached tenant {tenant_id} \
         should not be present in pageserver's memory"
 
 
@@ -428,9 +426,7 @@ def test_tenant_detach_regular_tenant(neon_simple_env: NeonEnv):
 
     # assert the tenant does not exists in the Pageserver
     tenants_after_detach = [tenant["id"] for tenant in client.tenant_list()]
-    assert (
-        tenant_id not in tenants_after_detach
-    ), f"Ignored and then detached tenant {tenant_id} \
+    assert tenant_id not in tenants_after_detach, f"Ignored and then detached tenant {tenant_id} \
         should not be present in pageserver's memory"
 
 
@@ -817,9 +813,7 @@ def test_metrics_while_ignoring_broken_tenant_and_reloading(
         if found_broken:
             break
         time.sleep(0.5)
-    assert (
-        found_broken
-    ), f"broken should still be in set, but it is not in the tenant state count: broken={broken}, broken_set={broken_set}"
+    assert found_broken, f"broken should still be in set, but it is not in the tenant state count: broken={broken}, broken_set={broken_set}"
 
     env.pageserver.tenant_load(env.initial_tenant)
 
@@ -837,6 +831,4 @@ def test_metrics_while_ignoring_broken_tenant_and_reloading(
             break
         time.sleep(0.5)
 
-    assert (
-        found_active
-    ), f"reloaded tenant should be active, and broken tenant set item removed: active={active}, broken_set={broken_set}"
+    assert found_active, f"reloaded tenant should be active, and broken tenant set item removed: active={active}, broken_set={broken_set}"
