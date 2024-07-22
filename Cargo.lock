@@ -3531,7 +3531,7 @@ dependencies = [
 [[package]]
 name = "postgres-protocol"
 version = "0.6.4"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#988d0ddb4184c408fa7fc1bd0ecca7993c02978f"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#cff6927e4f58b1af6ecc2ee7279df1f2ff537295"
 dependencies = [
  "base64 0.20.0",
  "byteorder",
@@ -3544,12 +3544,13 @@ dependencies = [
  "rand 0.8.5",
  "sha2",
  "stringprep",
+ "tokio",
 ]
 
 [[package]]
 name = "postgres-types"
 version = "0.2.4"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#988d0ddb4184c408fa7fc1bd0ecca7993c02978f"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#cff6927e4f58b1af6ecc2ee7279df1f2ff537295"
 dependencies = [
  "bytes",
  "fallible-iterator",
@@ -4334,9 +4335,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.21.9"
+version = "0.21.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "629648aced5775d558af50b2b4c7b02983a04b312126d45eeead26e7caa498b9"
+checksum = "7fecbfb7b1444f477b345853b1fce097a2c6fb637b2bfb87e6bc5db0f043fae4"
 dependencies = [
  "log",
  "ring 0.17.6",
@@ -5331,7 +5332,7 @@ dependencies = [
 [[package]]
 name = "tokio-postgres"
 version = "0.7.7"
-source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#988d0ddb4184c408fa7fc1bd0ecca7993c02978f"
+source = "git+https://github.com/neondatabase/rust-postgres.git?branch=neon#cff6927e4f58b1af6ecc2ee7279df1f2ff537295"
 dependencies = [
  "async-trait",
  "byteorder",
